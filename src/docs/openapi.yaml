@@ -1,0 +1,1203 @@
+openapi: 3.0.3
+info:
+  title: MoneyGuard API
+  version: 1.0.0
+  description: |
+    Backend for MoneyGuard: balance, bills and expenses tracking, a daily "safe to spend" figure,
+    and affordability calculators.
+
+    **Conventions**
+    - JSON everywhere. Send `Content-Type: application/json` (except file upload).
+    - Money is a plain number with up to 2 decimals (e.g. `250.75`; extra decimals are rounded to cents). Numeric strings like `"250.75"` are accepted on input; responses always use numbers. Amounts that must be positive have a minimum of `0.01`.
+    - Dates are ISO 8601 and must be real calendar dates between 1900 and 2200. Send `2026-12-01` (taken as UTC midnight) or a date-time **with a time zone**: `2026-12-01T09:00:00Z` or `2026-12-01T09:00:00+05:30`. A date-time without a zone, or an impossible date such as `2026-02-30`, is rejected with a 400. Responses use full UTC timestamps.
+    - Errors are `{ "error": "message" }`. Validation errors (400) add `details`: one entry per bad field.
+    - Every response has an `X-Request-Id` header. Quote it when reporting a problem.
+    - **Idempotency:** on any POST/PUT/DELETE send an `Idempotency-Key` header (e.g. a UUID, max 128 chars) so that a retry after a network failure cannot create a duplicate. A replayed response carries `Idempotent-Replayed: true`. GET requests ignore the header (they always return fresh data). Server errors (5xx) and rate-limit responses are never stored, so those can be retried.
+    - **Rate limits** (per client IP): 8 failed login/register attempts per 15 min; 30 writes, 20 calculator calls and 60 reads per minute. On `429`, wait and retry; the `RateLimit-*` headers say when.
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+tags:
+  - name: Auth
+  - name: Profile
+  - name: Bills
+  - name: Expenses
+  - name: Analytics
+  - name: Alerts
+  - name: Files
+  - name: Dashboard
+  - name: Calculators
+  - name: Platform
+
+paths:
+  /health:
+    get:
+      tags: [Platform]
+      summary: Liveness and database check
+      description: Not rate limited and not authenticated. Returns 503 when the database is unreachable.
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: Database unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Create an account
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterInput' }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginInput' }
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Wrong email or password (the same answer for both, on purpose)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Get a new access token
+      description: |
+        Access tokens last 1 hour. Call this when one has expired (a 401 on any request) or is about to, and the user stays signed in for as long as refresh tokens keep being used. Each refresh token works **once**: the response
+        carries a new one that replaces it, so always store the latest. Each refresh token is valid for 7 days from when it was issued, and every refresh issues a fresh 7 days, so a user who opens the app at least once a week stays signed in and an unused login ends after 7 days.
+        Sending an already-used refresh token ends that whole login (every token from it), because it probably leaked.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshInput' }
+      responses:
+        '200':
+          description: New tokens
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401':
+          description: Unknown, expired or already used refresh token. Log in again.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out
+      description: Revokes the refresh token and every token issued from the same login. Always succeeds. The access token stays valid until it expires.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshInput' }
+      responses:
+        '200':
+          description: Logged out
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password reset
+      description: |
+        Sends the account's email a reset token that works once for 60 minutes. A new request replaces any earlier token.
+        The answer is the same whether or not the email has an account. Limited to 8 requests per 15 minutes per IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ForgotPasswordInput' }
+      responses:
+        '200':
+          description: Accepted (always, whether or not the account exists)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Set a new password with a reset token
+      description: Also logs the user out everywhere. All refresh tokens are revoked and access tokens issued before the reset stop working, so log in again with the new password.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPasswordInput' }
+      responses:
+        '200':
+          description: Password changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '400':
+          description: Invalid input (with `details`), or the reset token is unknown, expired or already used
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - { $ref: '#/components/schemas/ValidationError' }
+                  - { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/me:
+    get:
+      tags: [Profile]
+      summary: Current user
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The signed-in user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/balance:
+    put:
+      tags: [Profile]
+      summary: Set the current balance
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [balance]
+              properties:
+                balance: { $ref: '#/components/schemas/Money' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [balance]
+                properties:
+                  balance: { type: number, example: 1000 }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/next-income:
+    put:
+      tags: [Profile]
+      summary: Set the next expected income
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { $ref: '#/components/schemas/Money' }
+                date:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: When the income arrives. Omit or null if unknown (the app then assumes 30 days).
+                  example: '2026-12-01'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nextIncomeAmount, nextIncomeDate]
+                properties:
+                  nextIncomeAmount: { type: number, example: 500 }
+                  nextIncomeDate: { type: string, format: date-time, nullable: true }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/savings-goal:
+    put:
+      tags: [Profile]
+      summary: Set the savings goal
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { $ref: '#/components/schemas/Money' }
+                deadline: { type: string, format: date-time, nullable: true, example: '2027-01-01' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [savingsGoalAmount, savingsGoalDeadline]
+                properties:
+                  savingsGoalAmount: { type: number, example: 200 }
+                  savingsGoalDeadline: { type: string, format: date-time, nullable: true }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/bills:
+    get:
+      tags: [Bills]
+      summary: List my bills (oldest first)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Bills
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Bill' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Bills]
+      summary: Add a bill
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BillInput' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bill' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/bills/{id}:
+    delete:
+      tags: [Bills]
+      summary: Delete a bill
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, example: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such bill (or it belongs to someone else)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/expenses:
+    get:
+      tags: [Expenses]
+      summary: List my expenses (newest first)
+      description: |
+        Filter with the query parameters below (all optional, combined with AND). The result is one page; the
+        `X-Total-Count` response header is the number of matches across all pages.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: from, in: query, description: 'First day to include, e.g. 2026-10-01 (UTC).', schema: { type: string, format: date } }
+        - { name: to, in: query, description: 'Last day to include, e.g. 2026-10-31 (UTC).', schema: { type: string, format: date } }
+        - { name: category, in: query, description: 'Exact category, any letter case.', schema: { type: string, maxLength: 50 } }
+        - { name: minAmount, in: query, schema: { type: number, minimum: 0.01 } }
+        - { name: maxAmount, in: query, schema: { type: number, minimum: 0.01 } }
+        - { name: limit, in: query, description: 'Page size.', schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: offset, in: query, description: 'How many matches to skip.', schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Expenses
+          headers:
+            X-Total-Count:
+              description: Number of expenses matching the filters, across all pages.
+              schema: { type: integer }
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Expense' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    post:
+      tags: [Expenses]
+      summary: Record an expense
+      description: Also reduces the balance by the amount, in one atomic step. An expense larger than the balance is refused (422) and nothing changes, even when many requests arrive at once.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExpenseInput' }
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Expense' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: The amount is more than the current balance. Nothing was recorded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/expenses/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      tags: [Expenses]
+      summary: Edit an expense
+      description: |
+        Send only the fields to change (at least one). If the amount changes, the balance moves by the difference in the
+        same atomic step. Raising the amount above what the balance can cover is refused (422) and nothing changes.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExpenseUpdate' }
+      responses:
+        '200':
+          description: The updated expense
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Expense' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such expense (or it is not yours)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: The new amount is more than the balance allows. Nothing changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    delete:
+      tags: [Expenses]
+      summary: Delete an expense
+      description: The expense amount is added back to the balance, in the same atomic step.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, balance]
+                properties:
+                  ok: { type: boolean, example: true }
+                  balance: { type: number, description: 'The balance after the refund.' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such expense (or it is not yours)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/files:
+    get:
+      tags: [Files]
+      summary: List my uploaded files
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Files
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FileRecord' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [Files]
+      summary: Upload a file
+      description: |
+        Multipart form with one field named `file`. Allowed: JPEG, PNG, WebP, GIF, PDF, MP4, MOV, WebM. Max 20 MB.
+        The file is then available at `/uploads/{filename}`.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '201':
+          description: Stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FileRecord' }
+        '400':
+          description: No file, wrong type, or too large
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /uploads/{filename}:
+    get:
+      tags: [Files]
+      summary: Download an uploaded file
+      description: Public link, protected only by the unguessable filename. Do not treat it as private storage.
+      parameters:
+        - { name: filename, in: path, required: true, schema: { type: string }, example: 3f2a9c1e-5b7d-4d3a-9d1e-0c2f6b8a7e41.png }
+      responses:
+        '200': { description: The file }
+        '404': { description: Not found }
+
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: Home screen data
+      description: Balance, next income, how much is safe to spend today, and the 5 most recent expenses.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Dashboard
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dashboard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/can-i-afford:
+    post:
+      tags: [Calculators]
+      summary: Can I afford this purchase today?
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { $ref: '#/components/schemas/PositiveMoney' }
+      responses:
+        '200':
+          description: Recommendation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CanIAfford' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/projected-balance:
+    post:
+      tags: [Calculators]
+      summary: Monthly balance after a proposed EMI
+      description: "Projected balance = income − ordinary expenses − existing EMI − proposed EMI. A negative result sets `isNegative` and a `warning`."
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [monthlyIncome]
+              properties:
+                monthlyIncome: { $ref: '#/components/schemas/Money' }
+                ordinaryExpenses: { $ref: '#/components/schemas/Money' }
+                existingEMI: { $ref: '#/components/schemas/Money' }
+                proposedEMI: { $ref: '#/components/schemas/Money' }
+            example: { monthlyIncome: 450000, ordinaryExpenses: 180000, existingEMI: 35000, proposedEMI: 50000 }
+      responses:
+        '200':
+          description: Projection
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProjectedBalance' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/cash-flow:
+    post:
+      tags: [Calculators]
+      summary: Month-by-month cash flow projection
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [monthlyGrossIncome]
+              properties:
+                monthlyGrossIncome: { $ref: '#/components/schemas/Money' }
+                otherMonthlyExpenses: { $ref: '#/components/schemas/Money' }
+                existingMonthlyDebtPayments: { $ref: '#/components/schemas/Money' }
+                monthlyPayment: { $ref: '#/components/schemas/Money' }
+                startingCashBalance: { type: number, minimum: -1000000000000, maximum: 1000000000000, default: 0, description: May be negative (overdrawn). }
+                months: { type: integer, minimum: 1, maximum: 120, default: 6 }
+      responses:
+        '200':
+          description: Projection and summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CashFlow' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/affordability:
+    post:
+      tags: [Calculators]
+      summary: Loan affordability
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [monthlyGrossIncome]
+              properties:
+                monthlyGrossIncome: { $ref: '#/components/schemas/Money' }
+                otherMonthlyExpenses: { $ref: '#/components/schemas/Money' }
+                existingMonthlyDebtPayments: { $ref: '#/components/schemas/Money' }
+                proposedMonthlyPayment: { $ref: '#/components/schemas/Money' }
+                targetDtiRatio: { type: number, minimum: 0, maximum: 1, default: 0.4, description: Maximum share of income going to debt. }
+                annualInterestRate: { type: number, minimum: 0, maximum: 1, default: 0, description: 'A fraction, not a percentage: 0.12 means 12%.' }
+                loanTermMonths: { type: integer, minimum: 1, maximum: 480, default: 12 }
+      responses:
+        '200':
+          description: Affordability result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Affordability' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/analytics/summary:
+    get:
+      tags: [Analytics]
+      summary: Spending summary for a date range
+      description: |
+        Totals, spending per category and a per-day or per-month series, for a range of UTC days (both ends included).
+        Defaults to the last 30 days up to today. The range can be at most 731 days. Categories are grouped without
+        regard to letter case. Periods with no spending are left out of `series`.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: from, in: query, description: 'First day, e.g. 2026-10-01.', schema: { type: string, format: date } }
+        - { name: to, in: query, description: 'Last day, e.g. 2026-10-31.', schema: { type: string, format: date } }
+        - { name: groupBy, in: query, description: 'Bucket size of the series.', schema: { type: string, enum: [day, month], default: day } }
+      responses:
+        '200':
+          description: Summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyticsSummary' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/alert-rules:
+    get:
+      tags: [Alerts]
+      summary: List my alert rules
+      description: Alerts are off until the user sets rules. There are no default rules.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AlertRule' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    put:
+      tags: [Alerts]
+      summary: Set an alert rule
+      description: |
+        Creates the rule, or updates the user's existing rule of the same type (for `category_monthly_budget`, of the same
+        category, compared without regard to letter case). What `threshold` means depends on `type`:
+
+        | type | threshold | fires when |
+        |---|---|---|
+        | `low_balance` | an amount | balance is below it |
+        | `daily_spend_limit` | an amount | spent today is above it |
+        | `monthly_spend_limit` | an amount | spent this month is above it |
+        | `category_monthly_budget` | an amount (also needs `category`) | spent on that category this month is above it |
+        | `bill_due_soon` | a number of days, 1 to 60 | a bill is due within that many days (including today) |
+        | `over_safe_to_spend` | none (sending one is a 400) | today's spending is above today's safe-to-spend figure |
+
+        Days and months are UTC. A rule fires at most once per day (low balance, daily limit, safe-to-spend), once per
+        month (monthly limit, category budget) or once per bill. Fields that do not apply to the type are rejected.
+        At most 50 rules per user. The rule is checked right away.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AlertRuleInput' }
+      responses:
+        '200':
+          description: The saved rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertRule' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: The user already has the maximum number of rules.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/alert-rules/{id}:
+    delete:
+      tags: [Alerts]
+      summary: Delete an alert rule
+      description: Alerts the rule already produced stay in the history.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such rule (or it is not yours)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/alerts:
+    get:
+      tags: [Alerts]
+      summary: List my alerts (newest first)
+      description: |
+        Checks the user's rules first, so alerts that depend on the calendar (a bill coming due) show up without any
+        other action. Rules are also checked after every change to the balance, bills, income, savings goal or expenses,
+        so this list is current after any of those calls. Alerts are kept for 90 days.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: unread, in: query, description: 'Only unread alerts.', schema: { type: boolean, default: false } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: Alerts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertList' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/alerts/read-all:
+    post:
+      tags: [Alerts]
+      summary: Mark all my alerts as read
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: How many alerts were newly marked read
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated: { type: integer, example: 3 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/alerts/{id}/read:
+    post:
+      tags: [Alerts]
+      summary: Mark one alert as read
+      description: Safe to repeat; the first read time is kept.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      responses:
+        '200':
+          description: The alert
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Alert' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such alert (or it is not yours)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The `token` returned by register or login. Valid for 1 hour (`expiresIn` seconds); renew it with `POST /api/auth/refresh`.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Unique key per user action (e.g. a UUID). A retry with the same key and body returns the first result instead of repeating the action.
+      schema: { type: string, maxLength: 128 }
+
+  responses:
+    ValidationError:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ValidationError' }
+    Unauthorized:
+      description: Missing, invalid or expired token, or the account no longer exists
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Rate limit hit. Retry later.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, example: Something went wrong }
+
+    ValidationError:
+      type: object
+      required: [error, details]
+      properties:
+        error: { type: string, example: Validation failed }
+        details:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field: { type: string, example: amount }
+              message: { type: string, example: amount must be greater than 0 }
+
+    Health:
+      type: object
+      required: [status, database, redis]
+      properties:
+        status: { type: string, enum: [ok, degraded] }
+        database: { type: string, enum: [connected, down] }
+        redis: { type: string, enum: [connected, memory] }
+
+    Money:
+      type: number
+      minimum: 0
+      maximum: 1000000000000
+      example: 250.75
+    PositiveMoney:
+      type: number
+      minimum: 0.01
+      maximum: 1000000000000
+      example: 99.99
+
+    RegisterInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254, description: 'ASCII only. Trimmed and lowercased by the server.' }
+        password: { type: string, minLength: 8, description: 'At most 72 bytes (accented and non-Latin characters use 2-4 bytes each).' }
+        phone: { type: string, nullable: true, example: '+91 98765 43210' }
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+
+    User:
+      type: object
+      required: [id, email, phone, balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        balance: { type: number }
+        nextIncomeAmount: { type: number }
+        nextIncomeDate: { type: string, format: date-time, nullable: true }
+        savingsGoalAmount: { type: number }
+        savingsGoalDeadline: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+    AuthResponse:
+      type: object
+      required: [token, expiresIn, refreshToken, user]
+      properties:
+        token: { type: string, description: 'Send as `Authorization: Bearer <token>`. Short-lived.' }
+        expiresIn: { type: integer, example: 3600, description: 'Seconds until `token` expires. Refresh shortly before that, or on the first 401.' }
+        refreshToken: { type: string, description: 'Keep it somewhere safe. Trade it for a new token at `POST /api/auth/refresh` once `token` has expired.' }
+        user: { $ref: '#/components/schemas/User' }
+    TokenPair:
+      type: object
+      required: [token, expiresIn, refreshToken]
+      properties:
+        token: { type: string }
+        expiresIn: { type: integer, example: 3600 }
+        refreshToken: { type: string, description: The new refresh token. The one you sent no longer works. }
+    RefreshInput:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+    ForgotPasswordInput:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+    ResetPasswordInput:
+      type: object
+      required: [token, password]
+      properties:
+        token: { type: string, description: The token from the reset email. }
+        password: { type: string, minLength: 8, description: At most 72 bytes. }
+    Ok:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean, example: true }
+    Message:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+
+    BillInput:
+      type: object
+      required: [name, amount]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100, example: Rent }
+        amount: { $ref: '#/components/schemas/PositiveMoney' }
+        dueDate: { type: string, format: date-time, nullable: true, example: '2026-11-01' }
+    Bill:
+      type: object
+      required: [id, userId, name, amount, dueDate, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        amount: { type: number }
+        dueDate: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    ExpenseInput:
+      type: object
+      required: [amount]
+      properties:
+        amount: { $ref: '#/components/schemas/PositiveMoney' }
+        category: { type: string, maxLength: 50, default: Other, example: Food }
+        description: { type: string, maxLength: 200, default: '' }
+        date: { type: string, format: date-time, description: Defaults to now. }
+    Expense:
+      type: object
+      required: [id, userId, amount, category, description, date, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        amount: { type: number }
+        category: { type: string }
+        description: { type: string }
+        date: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    ExpenseUpdate:
+      type: object
+      minProperties: 1
+      description: Any of these fields; at least one.
+      properties:
+        amount: { $ref: '#/components/schemas/PositiveMoney' }
+        category: { type: string, minLength: 1, maxLength: 50 }
+        description: { type: string, maxLength: 200 }
+        date: { type: string, format: date-time }
+
+    AnalyticsSummary:
+      type: object
+      required: [from, to, groupBy, days, totalSpent, transactionCount, averageDailySpend, topCategory, byCategory, series]
+      properties:
+        from: { type: string, format: date, example: '2026-10-01' }
+        to: { type: string, format: date, example: '2026-10-31' }
+        groupBy: { type: string, enum: [day, month] }
+        days: { type: integer, description: 'Number of days in the range, both ends included.' }
+        totalSpent: { type: number }
+        transactionCount: { type: integer }
+        averageDailySpend: { type: number, description: totalSpent divided by days. }
+        topCategory: { type: string, nullable: true, description: 'The category with the most spending, or null when nothing was spent.' }
+        byCategory:
+          type: array
+          description: Largest first.
+          items:
+            type: object
+            required: [category, total, count, percent]
+            properties:
+              category: { type: string }
+              total: { type: number }
+              count: { type: integer }
+              percent: { type: number, description: 'Share of totalSpent, one decimal.' }
+        series:
+          type: array
+          description: Oldest first. Periods without spending are left out.
+          items:
+            type: object
+            required: [period, total, count]
+            properties:
+              period: { type: string, description: 'YYYY-MM-DD when grouped by day, YYYY-MM by month.', example: '2026-10-22' }
+              total: { type: number }
+              count: { type: integer }
+
+    AlertRuleInput:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [low_balance, daily_spend_limit, monthly_spend_limit, category_monthly_budget, bill_due_soon, over_safe_to_spend]
+        threshold:
+          type: number
+          description: Required for every type except over_safe_to_spend, where it must be left out. Days (1 to 60) for bill_due_soon, an amount (at least 0.01) otherwise.
+        category: { type: string, maxLength: 50, description: 'Required for category_monthly_budget and not allowed for other types.' }
+        enabled: { type: boolean, default: true }
+    AlertRule:
+      type: object
+      required: [id, userId, type, threshold, category, enabled, createdAt, updatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [low_balance, daily_spend_limit, monthly_spend_limit, category_monthly_budget, bill_due_soon, over_safe_to_spend]
+        threshold: { type: number, nullable: true }
+        category: { type: string, nullable: true }
+        enabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Alert:
+      type: object
+      required: [id, userId, ruleId, type, message, data, periodKey, createdAt, readAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        ruleId: { type: string, format: uuid, nullable: true, description: 'Null once the rule that produced it was deleted.' }
+        type:
+          type: string
+          enum: [low_balance, daily_spend_limit, monthly_spend_limit, category_monthly_budget, bill_due_soon, over_safe_to_spend]
+        message: { type: string, description: A sentence that can be shown as is. }
+        data: { type: object, additionalProperties: true, description: 'The numbers behind the message, for custom displays. The fields depend on the type.' }
+        periodKey: { type: string, description: 'The day, month or bill this alert is for. Informational.' }
+        createdAt: { type: string, format: date-time }
+        readAt: { type: string, format: date-time, nullable: true }
+    AlertList:
+      type: object
+      required: [alerts, unreadCount, total]
+      properties:
+        alerts:
+          type: array
+          items: { $ref: '#/components/schemas/Alert' }
+        unreadCount: { type: integer, description: 'All unread alerts, not just this page.' }
+        total: { type: integer, description: 'Alerts matching the filter, across all pages.' }
+
+    FileRecord:
+      type: object
+      required: [id, userId, filename, originalName, mimetype, size, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        userId: { type: string, format: uuid }
+        filename: { type: string, description: 'Name on the server; use it in `/uploads/{filename}`.' }
+        originalName: { type: string }
+        mimetype: { type: string }
+        size: { type: integer, description: Bytes. }
+        createdAt: { type: string, format: date-time }
+
+    SafeToSpend:
+      type: object
+      required: [dailySafeToSpend, remainingToday, daysUntilNextIncome, upcomingBillsTotal, savingsReserve, availableAfterCommitments, spentToday, warnings]
+      properties:
+        dailySafeToSpend: { type: number, description: 'Balance minus upcoming bills and savings reserve, divided by days until next income. Never negative.' }
+        remainingToday: { type: number, description: dailySafeToSpend minus what was already spent today. Negative means over budget. }
+        daysUntilNextIncome: { type: integer, minimum: 1 }
+        upcomingBillsTotal: { type: number }
+        savingsReserve: { type: number }
+        availableAfterCommitments: { type: number }
+        spentToday: { type: number }
+        warnings: { type: array, items: { type: string } }
+    Dashboard:
+      type: object
+      required: [user, safeToSpend, recentExpenses, unreadAlerts]
+      properties:
+        user:
+          type: object
+          required: [balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount]
+          properties:
+            balance: { type: number }
+            nextIncomeAmount: { type: number }
+            nextIncomeDate: { type: string, format: date-time, nullable: true }
+            savingsGoalAmount: { type: number }
+        safeToSpend: { $ref: '#/components/schemas/SafeToSpend' }
+        recentExpenses:
+          type: array
+          maxItems: 5
+          items: { $ref: '#/components/schemas/Expense' }
+        unreadAlerts: { type: integer, description: 'Alerts the user has not marked as read.' }
+
+    CanIAfford:
+      type: object
+      required: [recommendation, reason, explanation, remainingAfterPurchase, cashFlowWarnings, safeToSpend]
+      properties:
+        recommendation: { type: string, enum: [Safe, ThinkTwice, NotRecommended] }
+        reason: { type: string }
+        explanation: { type: string }
+        remainingAfterPurchase: { type: number }
+        cashFlowWarnings: { type: array, items: { type: string } }
+        safeToSpend: { $ref: '#/components/schemas/SafeToSpend' }
+
+    ProjectedBalance:
+      type: object
+      required: [monthlyIncome, ordinaryExpenses, existingEMI, proposedEMI, projectedBalance, shortfall, isNegative, warning]
+      properties:
+        monthlyIncome: { type: number }
+        ordinaryExpenses: { type: number }
+        existingEMI: { type: number }
+        proposedEMI: { type: number }
+        projectedBalance: { type: number, description: Can be negative. }
+        shortfall: { type: number, description: How much commitments exceed income; 0 when not negative. }
+        isNegative: { type: boolean }
+        warning: { type: string, nullable: true, description: Human-readable message when negative or exactly zero; otherwise null. }
+
+    CashFlow:
+      type: object
+      required: [projection, summary]
+      properties:
+        projection:
+          type: array
+          items:
+            type: object
+            required: [month, startingBalance, income, debtPayments, otherExpenses, endingBalance, isNegative]
+            properties:
+              month: { type: integer }
+              startingBalance: { type: number }
+              income: { type: number }
+              debtPayments: { type: number }
+              otherExpenses: { type: number }
+              endingBalance: { type: number }
+              isNegative: { type: boolean }
+        summary:
+          type: object
+          required: [totalMonths, negativeMonths, lowestEndingBalance, warnings]
+          properties:
+            totalMonths: { type: integer }
+            negativeMonths: { type: array, items: { type: integer } }
+            lowestEndingBalance: { type: number }
+            warnings: { type: array, items: { type: string } }
+
+    Affordability:
+      allOf:
+        - $ref: '#/components/schemas/ProjectedBalance'
+        - type: object
+          required: [maxAffordableMonthlyPayment, maxAffordableLoanAmount, debtToIncomeRatio, isAffordable, warnings]
+          properties:
+            maxAffordableMonthlyPayment: { type: number }
+            maxAffordableLoanAmount: { type: number }
+            debtToIncomeRatio: { type: number, description: 'Fraction: 0.15 means 15% of income goes to debt.' }
+            isAffordable: { type: boolean }
+            warnings: { type: array, items: { type: string } }

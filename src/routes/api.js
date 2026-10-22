@@ -1,0 +1,254 @@
+import express from 'express';
+import fs from 'fs/promises';
+import { query, withTransaction } from '../utils/db.js';
+import { asyncHandler as h } from '../utils/asyncHandler.js';
+import { authMiddleware } from '../middleware/auth.js';
+import { validate, validateQuery } from '../middleware/validate.js';
+import { uuidParam } from '../middleware/uuidParam.js';
+import { writeLimiter, calcLimiter, readLimiter } from '../middleware/rateLimit.js';
+import { upload } from '../middleware/upload.js';
+import * as schemas from '../validation/schemas.js';
+import {
+  canIAfford,
+  runAffordabilityCalculator,
+  generateCashFlowProjection,
+  summarizeCashFlow,
+  calculateProjectedBalance,
+} from '../services/calculator.js';
+import { safeToSpendFor } from '../services/budget.js';
+import { evaluateAlerts } from '../services/alerts.js';
+import alertsRouter from './alerts.js';
+import analyticsRouter from './analytics.js';
+import logger from '../utils/logger.js';
+
+const router = express.Router();
+router.use(authMiddleware);
+
+// Loads the caller once per request. A valid token for a deleted user is rejected.
+router.use(h(async (req, res, next) => {
+  [req.user] = await query('SELECT * FROM users WHERE id = $1', [req.userId]);
+  if (!req.user) return res.status(401).json({ error: 'Account not found' });
+  // A password reset ends every session that started before it.
+  if (req.user.passwordChangedAt && req.tokenIssuedAt < Math.floor(req.user.passwordChangedAt.getTime() / 1000)) {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+  next();
+}));
+
+router.param('id', uuidParam);
+
+// Checks the user's alert rules after something they depend on changed. Never fails the request.
+const checkAlerts = (req) => evaluateAlerts(req.userId);
+
+// ---- Profile ----
+
+router.get('/me', readLimiter, (req, res) => {
+  const { passwordHash, passwordChangedAt, ...safe } = req.user;
+  res.json(safe);
+});
+
+router.put('/balance', writeLimiter, validate(schemas.balance), h(async (req, res) => {
+  const [row] = await query('UPDATE users SET balance = $1 WHERE id = $2 RETURNING balance', [req.body.balance, req.userId]);
+  await checkAlerts(req);
+  res.json(row);
+}));
+
+router.put('/next-income', writeLimiter, validate(schemas.nextIncome), h(async (req, res) => {
+  const [row] = await query(
+    'UPDATE users SET next_income_amount = $1, next_income_date = $2 WHERE id = $3 RETURNING next_income_amount, next_income_date',
+    [req.body.amount, req.body.date ?? null, req.userId],
+  );
+  await checkAlerts(req);
+  res.json(row);
+}));
+
+router.put('/savings-goal', writeLimiter, validate(schemas.savingsGoal), h(async (req, res) => {
+  const [row] = await query(
+    'UPDATE users SET savings_goal_amount = $1, savings_goal_deadline = $2 WHERE id = $3 RETURNING savings_goal_amount, savings_goal_deadline',
+    [req.body.amount, req.body.deadline ?? null, req.userId],
+  );
+  await checkAlerts(req);
+  res.json(row);
+}));
+
+// ---- Bills ----
+
+router.get('/bills', readLimiter, h(async (req, res) => {
+  res.json(await query('SELECT * FROM bills WHERE user_id = $1 ORDER BY created_at', [req.userId]));
+}));
+
+router.post('/bills', writeLimiter, validate(schemas.bill), h(async (req, res) => {
+  const { name, amount, dueDate } = req.body;
+  const [bill] = await query(
+    'INSERT INTO bills (user_id, name, amount, due_date) VALUES ($1, $2, $3, $4) RETURNING *',
+    [req.userId, name, amount, dueDate ?? null],
+  );
+  await checkAlerts(req);
+  res.status(201).json(bill);
+}));
+
+router.delete('/bills/:id', writeLimiter, h(async (req, res) => {
+  const deleted = await query('DELETE FROM bills WHERE id = $1 AND user_id = $2 RETURNING id', [req.params.id, req.userId]);
+  if (!deleted.length) return res.status(404).json({ error: 'Bill not found' });
+  await checkAlerts(req);
+  res.json({ ok: true });
+}));
+
+// ---- Expenses ----
+
+// Newest first. Filters: from/to (UTC days, both included), category (any letter case), minAmount, maxAmount.
+// Paged with limit (default 100, max 500) and offset; the X-Total-Count header is the number of matches across all pages.
+router.get('/expenses', readLimiter, validateQuery(schemas.expenseQuery), h(async (req, res) => {
+  const { from, to, category, minAmount, maxAmount, limit, offset } = req.query;
+  const where = ['user_id = $1'];
+  const params = [req.userId];
+  const add = (condition, value) => { params.push(value); where.push(condition.replace('?', '$' + params.length)); };
+  if (from) add('date >= ?', new Date(from));
+  if (to) add('date < ?', new Date(Date.parse(to) + 86_400_000));
+  if (category) add('lower(category) = lower(?)', category);
+  if (minAmount != null) add('amount >= ?', minAmount);
+  if (maxAmount != null) add('amount <= ?', maxAmount);
+  const filter = where.join(' AND ');
+
+  const [expenses, [{ total }]] = await Promise.all([
+    query(
+      `SELECT * FROM expenses WHERE ${filter} ORDER BY date DESC, created_at DESC, id LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset],
+    ),
+    query(`SELECT count(*)::int AS total FROM expenses WHERE ${filter}`, params),
+  ]);
+  res.set('X-Total-Count', String(total));
+  res.json(expenses);
+}));
+
+// One statement: the balance is reduced only if it covers the amount, and the expense is recorded only if it was.
+// The UPDATE locks the user's row, so simultaneous expenses are checked one after another against the real balance.
+router.post('/expenses', writeLimiter, validate(schemas.expense), h(async (req, res) => {
+  const { amount, category, description, date } = req.body;
+  const [expense] = await query(
+    `WITH reduced AS (
+       UPDATE users SET balance = balance - $2 WHERE id = $1 AND balance >= $2 RETURNING id
+     ), new_expense AS (
+       INSERT INTO expenses (user_id, amount, category, description, date)
+       SELECT id, $2::numeric, $3::text, $4::text, $5::timestamptz FROM reduced RETURNING *
+     )
+     SELECT * FROM new_expense`,
+    [req.userId, amount, category, description, date],
+  );
+  if (!expense) return res.status(422).json({ error: 'Insufficient balance' });
+  await checkAlerts(req);
+  res.status(201).json(expense);
+}));
+
+// Edits an expense and moves the balance by the difference, atomically. Raising the amount above what the balance
+// can cover is refused (422) like a new expense would be. The user's row is locked first, then the expense, in the
+// same order everywhere, so concurrent edits and deletes cannot deadlock or overspend.
+router.put('/expenses/:id', writeLimiter, validate(schemas.expenseUpdate), h(async (req, res) => {
+  const { amount, category, description, date } = req.body;
+  const outcome = await withTransaction(async (tx) => {
+    await tx.query('SELECT 1 FROM users WHERE id = $1 FOR UPDATE', [req.userId]);
+    const [old] = await tx.query('SELECT * FROM expenses WHERE id = $1 AND user_id = $2 FOR UPDATE', [req.params.id, req.userId]);
+    if (!old) return { status: 404 };
+
+    if (amount !== undefined && amount !== old.amount) {
+      const adjusted = await tx.query(
+        `UPDATE users SET balance = balance + $1::numeric - $2::numeric
+         WHERE id = $3 AND balance + $1::numeric - $2::numeric >= 0 RETURNING id`,
+        [old.amount, amount, req.userId],
+      );
+      if (!adjusted.length) return { status: 422 };
+    }
+    const [expense] = await tx.query(
+      `UPDATE expenses SET amount = COALESCE($3::numeric, amount), category = COALESCE($4::text, category),
+              description = COALESCE($5::text, description), date = COALESCE($6::timestamptz, date)
+       WHERE id = $1 AND user_id = $2 RETURNING *`,
+      [req.params.id, req.userId, amount ?? null, category ?? null, description ?? null, date ?? null],
+    );
+    return { expense };
+  });
+  if (outcome.status === 404) return res.status(404).json({ error: 'Expense not found' });
+  if (outcome.status === 422) return res.status(422).json({ error: 'Insufficient balance' });
+  await checkAlerts(req);
+  res.json(outcome.expense);
+}));
+
+// Deleting an expense gives its amount back to the balance (a refund, or a mistake being undone).
+router.delete('/expenses/:id', writeLimiter, h(async (req, res) => {
+  const balance = await withTransaction(async (tx) => {
+    await tx.query('SELECT 1 FROM users WHERE id = $1 FOR UPDATE', [req.userId]);
+    const [deleted] = await tx.query('DELETE FROM expenses WHERE id = $1 AND user_id = $2 RETURNING amount', [req.params.id, req.userId]);
+    if (!deleted) return null;
+    const [user] = await tx.query('UPDATE users SET balance = balance + $1::numeric WHERE id = $2 RETURNING balance', [deleted.amount, req.userId]);
+    return user.balance;
+  });
+  if (balance === null) return res.status(404).json({ error: 'Expense not found' });
+  await checkAlerts(req);
+  res.json({ ok: true, balance });
+}));
+
+// ---- Files ----
+
+router.post('/files', writeLimiter, upload.single('file'), h(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const { filename, originalname, mimetype, size } = req.file;
+  try {
+    const [record] = await query(
+      'INSERT INTO files (user_id, filename, original_name, mimetype, size) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [req.userId, filename, originalname, mimetype, size],
+    );
+    logger.info(`File uploaded: ${record.id} by user ${req.userId}`); // not the client-chosen name: it may contain control characters
+    res.status(201).json(record);
+  } catch (err) {
+    await fs.rm(req.file.path, { force: true }); // the file is already on disk; don't leave it without a record
+    throw err;
+  }
+}));
+
+router.get('/files', readLimiter, h(async (req, res) => {
+  res.json(await query('SELECT * FROM files WHERE user_id = $1 ORDER BY created_at DESC', [req.userId]));
+}));
+
+// ---- Dashboard and calculators ----
+
+router.get('/dashboard', readLimiter, h(async (req, res) => {
+  const { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount } = req.user;
+  const [safeToSpend, recentExpenses, [{ unread }]] = await Promise.all([
+    safeToSpendFor(req.user),
+    query('SELECT * FROM expenses WHERE user_id = $1 ORDER BY date DESC LIMIT 5', [req.userId]),
+    query('SELECT count(*)::int AS unread FROM alerts WHERE user_id = $1 AND read_at IS NULL', [req.userId]),
+  ]);
+  res.json({
+    user: { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount },
+    safeToSpend,
+    recentExpenses,
+    unreadAlerts: unread,
+  });
+}));
+
+router.post('/can-i-afford', calcLimiter, validate(schemas.canIAfford), h(async (req, res) => {
+  const safeToSpend = await safeToSpendFor(req.user);
+  const result = canIAfford({ purchaseAmount: req.body.amount, safeToSpend, balance: req.user.balance });
+  await query(
+    'INSERT INTO affordability_checks (user_id, amount, recommendation) VALUES ($1, $2, $3)',
+    [req.userId, req.body.amount, result.recommendation],
+  );
+  res.json({ ...result, safeToSpend });
+}));
+
+router.post('/projected-balance', calcLimiter, validate(schemas.projectedBalance), (req, res) => {
+  res.json(calculateProjectedBalance(req.body));
+});
+
+router.post('/cash-flow', calcLimiter, validate(schemas.cashFlow), (req, res) => {
+  const projection = generateCashFlowProjection(req.body, req.body.monthlyPayment, req.body.months);
+  res.json({ projection, summary: summarizeCashFlow(projection) });
+});
+
+router.post('/affordability', calcLimiter, validate(schemas.affordability), (req, res) => {
+  res.json(runAffordabilityCalculator(req.body));
+});
+
+router.use(alertsRouter);
+router.use(analyticsRouter);
+
+export default router;
