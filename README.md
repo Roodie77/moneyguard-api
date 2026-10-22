@@ -1955,7 +1955,7 @@ test/                node:test suites + run.js (starts the test database); see T
 - **Rate limits (per IP):** 8 failed login, sign-up, refresh or reset attempts per 15 min, 8 password-reset requests per 15 min, 30 writes / 20 calculations / 60 reads per minute, 300 requests per 15 min overall. `/health` is exempt. A `429` response means wait and retry.
 - **Files:** JPEG, PNG, WebP, GIF, PDF, MP4, MOV and WebM up to 20 MB. The stored name is random and the extension comes from the file type, never from the client's file name.
 - **Safe to spend:** the daily figure is the balance minus upcoming bills and a savings reserve, divided by the days until the next income, and never below zero. A bill with no due date, or one already past due, is always counted, so delete bills once they are paid.
-- **Logging:** one line per request (`GET /api/bills 200 12ms 3f2a9c1e`); the id is also returned as `X-Request-Id`. Query strings and bodies are never logged.
+- **Logging:** one line per request with the method, path, status, time, request id and client IP (`GET /api/bills 200 12ms 3f2a9c1e 203.0.113.9`); the id is also returned as `X-Request-Id`. Query strings, bodies, passwords and tokens are never logged. Behind a proxy (such as Render) set `TRUST_PROXY=1`, otherwise the IP logged is the proxy's, not the user's. IP addresses count as personal data in many countries, so keep the logs private and delete them on a schedule.
 - **Shutdown:** on SIGTERM the server stops accepting connections, finishes in-flight requests, then closes the database and Redis.
 
 Building the mobile app? See [docs/CLIENT_AUTH.md](docs/CLIENT_AUTH.md) for how it should store tokens, lock on launch and background, and react to each auth response.
