@@ -14,6 +14,21 @@ Node 20+, Express, PostgreSQL, JWT auth. Optional Redis for rate limits shared a
 **API reference:** run the server and open [`/docs`](http://localhost:3000/docs) (Swagger UI), or read
 [`src/docs/openapi.yaml`](src/docs/openapi.yaml). A test keeps that file in sync with the code.
 
+## Features
+
+- **Accounts and sessions:** register, log in, short-lived access tokens (1 hour) with rotating refresh tokens (7 days), log out, and password reset by emailed single-use token. Passwords are stored as bcrypt hashes.
+- **Profile:** current balance, next expected income, savings goal.
+- **Bills:** add, list and remove upcoming bills (they feed the safe-to-spend figure but do not change the balance).
+- **Expenses (transactions):** record, list with filters and paging (date range, category, amount), edit and delete. Every change moves the balance atomically, and spending more than the balance is refused.
+- **Safe to spend:** a daily figure worked out from the balance, upcoming bills, the savings goal and the days until the next income (`GET /api/dashboard`).
+- **Analytics:** totals, average per day, spending per category and a per-day or per-month series for any range of up to 731 days.
+- **Alerts:** rules the user sets themselves (low balance, daily limit, monthly limit, category budget, bill due soon, over today's safe-to-spend). Alerts are listed, marked read, and kept for 90 days.
+- **Calculators:** "can I afford this?", projected balance after a new EMI, month-by-month cash flow, and loan affordability.
+- **Files:** upload and list receipts and documents (images, PDF, video up to 20 MB).
+- **Safety and reliability:** input validation on every write, per-IP rate limits, idempotency keys for safe retries, request ids in every response and log line, and a `/health` check. See [How it behaves](#how-it-behaves).
+
+Every endpoint is listed in [API endpoints](#api-endpoints), with a request and response example for each.
+
 ## Quick start
 
 ```bash
@@ -1882,21 +1897,46 @@ DELETE {{baseUrl}}/api/alert-rules/3949a4dd-b406-434d-826c-7e29034520d0
 | `npm test` | Run all tests against a throwaway Postgres (about 20 seconds, no setup) |
 | `npm run load` | Load test the real server (see below) |
 
+## Testing
+
+`npm test` starts a throwaway PostgreSQL (no setup, deleted afterwards), applies the migrations, and runs every `*.test.js` file in `test/` with Node's built-in test runner. There are about 190 tests and a full run takes around 20 seconds. To use an existing empty database instead of the throwaway one, set `TEST_DATABASE_URL`. **Never point it at production data**: the tests create users and write rows.
+
+Most tests start the real app on a random port and call it over HTTP, like Postman would. Run `npm test` before every push.
+
+| Files | What they cover |
+|---|---|
+| `auth`, `tokens`, `edge-auth`, `edge-auth-limits` | Register, login, wrong passwords, refresh tokens (single use, reuse detection, expiry), logout, password reset, and the rate limits on those endpoints |
+| `profile`, `bills`, `uploads` | Balance, income and savings-goal updates, bills, file upload rules (allowed types, size limit, safe file names) |
+| `expenses`, `expenses-manage`, `expenses-race`, `overspend`, `edge-money` | Recording, filtering, paging, editing and deleting expenses, exact money maths, and that simultaneous requests can never overspend the balance |
+| `analytics` | Summary totals, per-category percentages, day and month grouping in UTC |
+| `alert-rules`, `alert-rules-validation`, `alert-engine`, `alerts-flow` | Setting thresholds, what each of the six rule types fires on, firing once per period, notifications, marking alerts read |
+| `calculator`, `calculators` | The money maths (safe-to-spend, EMI, cash flow, loan affordability), directly and through the API |
+| `idempotency` | A retry with the same key does not repeat the action; users never see each other's cached answers |
+| `edge-input`, `edge-behavior`, `edge-overload`, `platform`, `boot` | Odd input (bad dates, NUL characters), behaviour when the database is busy or down, startup and shutdown, request ids, unknown routes |
+| `openapi`, `openapi-features` | `src/docs/openapi.yaml` is valid and matches the code: every route is documented and real responses match the documented schemas |
+
+Not tests: `helpers.js` (shared shortcuts such as `registerUser`), `pg.js` (starts the throwaway database) and `run.js` (what `npm test` runs).
+
+Each test file runs in its own process, so the per-IP rate limits (for example 30 writes per minute) apply per file. A test that sends many writes belongs in its own file; that is why some topics are split across files.
+
+When you change behaviour, change the tests with it. When you add or change a route, update `src/docs/openapi.yaml`: the `openapi` tests fail if it no longer matches.
+
 ## Project layout
 
 ```
 src/
   server.js          boot: connect DB, listen, graceful shutdown
   app.js             middleware order and routes
-  routes/            auth.js (register/login), api.js (everything behind a token)
+  routes/            auth.js (public auth endpoints), api.js (profile, bills, expenses, files, dashboard, calculators),
+                     alerts.js (alert rules and alerts), analytics.js (spending summary); all but auth.js need a token
   validation/        Joi schemas, one per endpoint
-  middleware/        auth, validate, rateLimit, idempotency, upload, requestLogger, errorHandler
+  middleware/        auth, validate, uuidParam, rateLimit, idempotency, upload, requestLogger, errorHandler
   services/          calculator.js: pure money maths, no I/O; budget.js: safe-to-spend; alerts.js: rule engine;
                      notifier.js: alert delivery hook; tokens.js: refresh + reset tokens; mailer.js: reset email hook
   db/                migrate.js and migrations/*.sql
   utils/             db, redis, logger
   docs/openapi.yaml  the API contract
-test/                node:test suites + run.js (starts the test database)
+test/                node:test suites + run.js (starts the test database); see Testing
 ```
 
 ## How it behaves
@@ -1911,8 +1951,10 @@ test/                node:test suites + run.js (starts the test database)
 - **Transactions:** `GET /api/expenses` filters by day range, category and amount and is paged (`limit`, `offset`, `X-Total-Count`). Expenses can be edited (`PUT`) and deleted (`DELETE`); both move the balance atomically (a delete refunds it, a raise above the balance is a `422`).
 - **Analytics:** `GET /api/analytics/summary` gives totals, an average per day, spending per category and a per-day or per-month series for a range of UTC days.
 - **Alerts:** users set their own thresholds (`PUT /api/alert-rules`): low balance, daily limit, monthly limit, category budget, bill due soon, over today's safe-to-spend. There are no default rules. Rules are checked after every change that affects them and when the list is read; each fires once per day, month or bill. `GET /api/alerts` lists them (kept 90 days). **Nothing is pushed yet**: plug a sender into `src/services/notifier.js`.
-- **Idempotency:** send an `Idempotency-Key` header on POST/PUT; a retry returns the first result instead of repeating the action.
-- **Rate limits (per IP):** 8 failed logins or sign-ups per 15 min, 30 writes / 20 calculations / 60 reads per minute, 300 requests per 15 min overall. `/health` is exempt.
+- **Idempotency:** send an `Idempotency-Key` header on POST/PUT/DELETE; a retry within 5 minutes returns the first result instead of repeating the action. Do not send it on login, register or refresh, because the cached answer would contain tokens.
+- **Rate limits (per IP):** 8 failed login, sign-up, refresh or reset attempts per 15 min, 8 password-reset requests per 15 min, 30 writes / 20 calculations / 60 reads per minute, 300 requests per 15 min overall. `/health` is exempt. A `429` response means wait and retry.
+- **Files:** JPEG, PNG, WebP, GIF, PDF, MP4, MOV and WebM up to 20 MB. The stored name is random and the extension comes from the file type, never from the client's file name.
+- **Safe to spend:** the daily figure is the balance minus upcoming bills and a savings reserve, divided by the days until the next income, and never below zero. A bill with no due date, or one already past due, is always counted, so delete bills once they are paid.
 - **Logging:** one line per request (`GET /api/bills 200 12ms 3f2a9c1e`); the id is also returned as `X-Request-Id`. Query strings and bodies are never logged.
 - **Shutdown:** on SIGTERM the server stops accepting connections, finishes in-flight requests, then closes the database and Redis.
 
@@ -1990,4 +2032,7 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
   URLs is the planned fix.
 - **CORS is open to every origin.** Restrict it to the real frontend origins before launch.
 - **Password-reset emails need a provider.** The reset flow works end to end, but `src/services/mailer.js` only logs the token (outside production) until you connect an email service.
+- **No notifications are delivered.** Alerts appear when the app asks for them (`GET /api/alerts` or the dashboard's `unreadAlerts`). Push or email needs a sender in `src/services/notifier.js`.
+- **The profile is minimal.** There are no endpoints yet to change the email or phone, change the password while signed in, or delete the account. Only expenses are recorded as transactions, not income.
+- **No security headers.** `helmet` is not installed, and HTTPS must be terminated by the platform or a proxy in front of the app.
 - **Access tokens last 1 hour** and cannot be revoked individually: logout ends the refresh token, and a password reset invalidates earlier access tokens, but a stolen access token otherwise works until it expires.
