@@ -1,7 +1,9 @@
 # MoneyGuard Backend
 
-REST API for MoneyGuard: track balance, bills and expenses, get a daily "safe to spend" figure, and
-run affordability calculators (projected balance after a new EMI, loan affordability, cash-flow projection).
+**Author:** Jonathan Adewale
+
+REST API for MoneyGuard: track balance, bills and expenses, get a daily "safe to spend" figure, see where the money goes (analytics),
+set your own spending and balance alerts, and run affordability calculators (projected balance after a new EMI, loan affordability, cash-flow projection).
 
 Node 20+, Express, PostgreSQL, JWT auth. Optional Redis for rate limits shared across instances.
 
@@ -51,6 +53,1824 @@ Set in `.env` locally, as real environment variables in production.
 | `REFRESH_TOKEN_DAYS` | no | Refresh token lifetime, renewed on every refresh. Default `7`. |
 | `LOG_LEVEL` | no | Default `info` |
 | `AUTH_LIMIT_MAX` | no | Failed login/sign-up attempts allowed per 15 min per IP. Default `8`; only the test suite changes it. |
+
+## API endpoints
+
+Base URL (local): `http://localhost:3000`. Every endpoint below except the ones marked **Public** needs the header `Authorization: Bearer <access token>`.
+The interactive reference is at `/docs` (Swagger UI) and the contract is [`src/docs/openapi.yaml`](src/docs/openapi.yaml).
+
+| Area | Method and path | Auth | What it does |
+|---|---|---|---|
+| Platform | `GET /health` | Public | Liveness and database check |
+| Auth | `POST /api/auth/register` | Public | Create an account; returns an access token and a refresh token |
+| Auth | `POST /api/auth/login` | Public | Log in |
+| Auth | `POST /api/auth/refresh` | Public | Swap a refresh token for a new access token and a new refresh token |
+| Auth | `POST /api/auth/logout` | Public | Revoke a refresh token |
+| Auth | `POST /api/auth/forgot-password` | Public | Email a single-use password reset token |
+| Auth | `POST /api/auth/reset-password` | Public | Set a new password with the emailed token |
+| Profile | `GET /api/me` | Yes | The signed-in user |
+| Profile | `PUT /api/balance` | Yes | Set the current balance |
+| Profile | `PUT /api/next-income` | Yes | Set the next expected income and date |
+| Profile | `PUT /api/savings-goal` | Yes | Set a savings goal and deadline |
+| Bills | `GET /api/bills`, `POST /api/bills`, `DELETE /api/bills/:id` | Yes | List, add, remove bills |
+| Expenses | `GET /api/expenses` | Yes | List with filters and paging |
+| Expenses | `POST /api/expenses` | Yes | Record an expense (refused with 422 if it exceeds the balance) |
+| Expenses | `PUT /api/expenses/:id`, `DELETE /api/expenses/:id` | Yes | Edit or delete; the balance moves with it |
+| Files | `POST /api/files`, `GET /api/files`, `GET /uploads/:filename` | Yes / Yes / Public link | Upload and list files |
+| Dashboard | `GET /api/dashboard` | Yes | Balance, safe-to-spend, recent expenses, unread alert count |
+| Calculators | `POST /api/can-i-afford` | Yes | Can I afford this purchase today? |
+| Calculators | `POST /api/projected-balance`, `/api/cash-flow`, `/api/affordability` | Yes | EMI, cash-flow and loan affordability maths |
+| Analytics | `GET /api/analytics/summary` | Yes | Totals, per category, per day or month |
+| Alerts | `GET /api/alert-rules`, `PUT /api/alert-rules`, `DELETE /api/alert-rules/:id` | Yes | The user's own thresholds |
+| Alerts | `GET /api/alerts`, `POST /api/alerts/:id/read`, `POST /api/alerts/read-all` | Yes | See and clear alerts |
+
+### Testing with Postman
+
+1. Start the server (`npm run dev`) and create a Postman **environment** with three variables:
+
+   | Variable | Value |
+   |---|---|
+   | `baseUrl` | `http://localhost:3000` |
+   | `token` | _(leave empty; the script below fills it in)_ |
+   | `refreshToken` | _(leave empty)_ |
+
+2. On the **Register**, **Log in** and **Refresh** requests, add this to the **Scripts → Post-response** tab so the tokens are saved automatically:
+
+   ```js
+   const res = pm.response.json();
+   if (res.token) pm.environment.set("token", res.token);
+   if (res.refreshToken) pm.environment.set("refreshToken", res.refreshToken);
+   ```
+
+3. For every protected request, set **Authorization → Bearer Token** to `{{token}}` (or set it once on the collection and inherit it).
+4. Access tokens last 1 hour. When a request returns `401`, run **Refresh** (which sends `{ "refreshToken": "{{refreshToken}}" }`) and retry. A refresh token works once, so always keep the newest one.
+5. Send `Idempotency-Key: <any unique string>` on POST/PUT/DELETE if you want a retry to be safe from duplicates. Do not send it on login, register or refresh.
+
+### Examples
+
+Everything below was produced by running the real server against an empty database and calling each endpoint in order, so the
+responses are exactly what the API returns. Your ids, timestamps and tokens will differ, and long tokens are shortened here.
+Money values are plain numbers; days and months are UTC. Each group is collapsed: click it to open.
+
+### Platform
+
+<details>
+<summary>Show 1 example</summary>
+
+#### P1. Health check
+
+```http
+GET {{baseUrl}}/health
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "status": "ok",
+  "database": "connected",
+  "redis": "memory"
+}
+```
+
+</details>
+
+### Auth
+
+<details>
+<summary>Show 11 examples</summary>
+
+#### A1. Register a new user
+
+```http
+POST {{baseUrl}}/api/auth/register
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "email": "jonathan@example.com",
+  "password": "StrongPass123",
+  "phone": "+234 801 234 5678"
+}
+```
+
+**Response: `201 Created`**
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...",
+  "expiresIn": 3600,
+  "refreshToken": "vQrTa5TCI-LvX90hBjUhUxNF8XwKzecMWqaOxINBlB0",
+  "user": {
+    "id": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "email": "jonathan@example.com",
+    "phone": "+234 801 234 5678",
+    "balance": 0,
+    "nextIncomeAmount": 0,
+    "nextIncomeDate": null,
+    "savingsGoalAmount": 0,
+    "savingsGoalDeadline": null,
+    "createdAt": "2026-10-22T21:54:24.649Z"
+  }
+}
+```
+
+> Save `token` as the Postman variable `{{token}}` and `refreshToken` as `{{refreshToken}}`. The password is never returned.
+
+#### A2. Register with an email that already exists
+
+```http
+POST {{baseUrl}}/api/auth/register
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "email": "jonathan@example.com",
+  "password": "StrongPass123"
+}
+```
+
+**Response: `409 Conflict`**
+
+```json
+{
+  "error": "Email already registered"
+}
+```
+
+#### A3. Register with invalid input
+
+```http
+POST {{baseUrl}}/api/auth/register
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "email": "not-an-email",
+  "password": "short"
+}
+```
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "email",
+      "message": "email must be a valid email"
+    },
+    {
+      "field": "password",
+      "message": "password length must be at least 8 characters long"
+    }
+  ]
+}
+```
+
+> Every validation error names the field, so the app can show it under the right input.
+
+#### A4. Log in
+
+```http
+POST {{baseUrl}}/api/auth/login
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "email": "jonathan@example.com",
+  "password": "StrongPass123"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...",
+  "expiresIn": 3600,
+  "refreshToken": "B18HsISMEMNXOfEZ3SvnRCuJfwxby9P2hkfgIn6LtNw",
+  "user": {
+    "id": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "email": "jonathan@example.com",
+    "phone": "+234 801 234 5678",
+    "balance": 0,
+    "nextIncomeAmount": 0,
+    "nextIncomeDate": null,
+    "savingsGoalAmount": 0,
+    "savingsGoalDeadline": null,
+    "createdAt": "2026-10-22T21:54:24.649Z"
+  }
+}
+```
+
+#### A5. Log in with the wrong password
+
+```http
+POST {{baseUrl}}/api/auth/login
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "email": "jonathan@example.com",
+  "password": "WrongPass999"
+}
+```
+
+**Response: `401 Unauthorized`**
+
+```json
+{
+  "error": "Invalid credentials"
+}
+```
+
+> An unknown email gives the same response, so the endpoint cannot be used to find out who has an account.
+
+#### A6. Refresh the access token
+
+```http
+POST {{baseUrl}}/api/auth/refresh
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "refreshToken": "B18HsISMEMNXOfEZ3SvnRCuJfwxby9P2hkfgIn6LtNw"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...",
+  "expiresIn": 3600,
+  "refreshToken": "eMNfgSVlKxKSjN2Cgmxq2kMfSIR14WC-GaRxf_fbP-U"
+}
+```
+
+> A refresh token works **once**. Always store the new `refreshToken` from this response and discard the old one.
+
+#### A7. Refresh with a refresh token that was already used
+
+```http
+POST {{baseUrl}}/api/auth/refresh
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "refreshToken": "B18HsISMEMNXOfEZ3SvnRCuJfwxby9P2hkfgIn6LtNw"
+}
+```
+
+**Response: `401 Unauthorized`**
+
+```json
+{
+  "error": "Invalid or expired refresh token"
+}
+```
+
+> Reusing a spent token is treated as theft: the whole login (every token from it) is revoked.
+
+#### A8. Request a password reset
+
+```http
+POST {{baseUrl}}/api/auth/forgot-password
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "email": "ada@example.com"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "message": "If that email has an account, a password reset link is on its way."
+}
+```
+
+> The answer is the same whether or not the email has an account. The reset token is sent by email (not returned here) and works once for 60 minutes.
+
+#### A9. Reset the password with the emailed token
+
+```http
+POST {{baseUrl}}/api/auth/reset-password
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "token": "77nWe2-GY7S2AIZvPcsiYNZCAFUMt-H7L5rwmYd5VXA",
+  "password": "NewPassword456"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "ok": true
+}
+```
+
+> This signs the user out everywhere: all refresh tokens are revoked and older access tokens stop working.
+
+#### A10. Reset with a token that was already used
+
+```http
+POST {{baseUrl}}/api/auth/reset-password
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "token": "77nWe2-GY7S2AIZvPcsiYNZCAFUMt-H7L5rwmYd5VXA",
+  "password": "AnotherPass789"
+}
+```
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Invalid or expired reset token"
+}
+```
+
+#### A11. Log out
+
+```http
+POST {{baseUrl}}/api/auth/logout
+```
+
+**Headers / body type:** `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "refreshToken": "vE24mRYNf1p61oIJdi2NLIV5GpJmp37DB7IOshENSDE"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "ok": true
+}
+```
+
+> Revokes the refresh token and everything issued from the same login. Delete the stored tokens on the device afterwards.
+
+</details>
+
+### Profile
+
+<details>
+<summary>Show 6 examples</summary>
+
+#### P1. Call a protected endpoint without a token
+
+```http
+GET {{baseUrl}}/api/me
+```
+
+**Response: `401 Unauthorized`**
+
+```json
+{
+  "error": "Missing or invalid token"
+}
+```
+
+#### P2. Get my profile
+
+```http
+GET {{baseUrl}}/api/me
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "email": "jonathan@example.com",
+  "phone": "+234 801 234 5678",
+  "balance": 0,
+  "nextIncomeAmount": 0,
+  "nextIncomeDate": null,
+  "savingsGoalAmount": 0,
+  "savingsGoalDeadline": null,
+  "createdAt": "2026-10-22T21:54:24.649Z"
+}
+```
+
+#### P3. Set the current balance
+
+```http
+PUT {{baseUrl}}/api/balance
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "balance": 150000
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "balance": 150000
+}
+```
+
+> This **replaces** the balance; it does not add to it.
+
+#### P4. Set the next expected income
+
+```http
+PUT {{baseUrl}}/api/next-income
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 250000,
+  "date": "2026-11-30"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "nextIncomeAmount": 250000,
+  "nextIncomeDate": "2026-11-30T00:00:00.000Z"
+}
+```
+
+#### P5. Set a savings goal
+
+```http
+PUT {{baseUrl}}/api/savings-goal
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 100000,
+  "deadline": "2027-03-31"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "savingsGoalAmount": 100000,
+  "savingsGoalDeadline": "2027-03-31T00:00:00.000Z"
+}
+```
+
+#### P6. Set a balance that is not allowed
+
+```http
+PUT {{baseUrl}}/api/balance
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "balance": -50
+}
+```
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "balance",
+      "message": "balance must be greater than or equal to 0"
+    }
+  ]
+}
+```
+
+</details>
+
+### Bills
+
+<details>
+<summary>Show 4 examples</summary>
+
+#### B1. Add a bill
+
+```http
+POST {{baseUrl}}/api/bills
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "name": "Rent",
+  "amount": 80000,
+  "dueDate": "2026-11-01"
+}
+```
+
+**Response: `201 Created`**
+
+```json
+{
+  "id": "605d2165-6568-4253-a388-cb0965715acd",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "name": "Rent",
+  "amount": 80000,
+  "dueDate": "2026-11-01T00:00:00.000Z",
+  "createdAt": "2026-10-22T21:54:25.163Z"
+}
+```
+
+#### B2. List my bills
+
+```http
+GET {{baseUrl}}/api/bills
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+[
+  {
+    "id": "605d2165-6568-4253-a388-cb0965715acd",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "name": "Rent",
+    "amount": 80000,
+    "dueDate": "2026-11-01T00:00:00.000Z",
+    "createdAt": "2026-10-22T21:54:25.163Z"
+  },
+  {
+    "id": "5733818a-cc97-4849-a7a6-89d7342aac31",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "name": "Internet",
+    "amount": 15000,
+    "dueDate": "2026-10-28T00:00:00.000Z",
+    "createdAt": "2026-10-22T21:54:25.166Z"
+  },
+  {
+    "id": "73e63991-30be-4587-a613-33bb5e733ba1",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "name": "Gym",
+    "amount": 10000,
+    "dueDate": null,
+    "createdAt": "2026-10-22T21:54:25.169Z"
+  }
+]
+```
+
+> Bills do **not** reduce the balance. They are only counted when working out what is safe to spend.
+
+#### B3. Delete a bill
+
+```http
+DELETE {{baseUrl}}/api/bills/73e63991-30be-4587-a613-33bb5e733ba1
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "ok": true
+}
+```
+
+#### B4. Delete a bill that does not exist
+
+```http
+DELETE {{baseUrl}}/api/bills/73e63991-30be-4587-a613-33bb5e733ba1
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `404 Not Found`**
+
+```json
+{
+  "error": "Bill not found"
+}
+```
+
+</details>
+
+### Expenses
+
+<details>
+<summary>Show 9 examples</summary>
+
+#### E1. Record an expense
+
+```http
+POST {{baseUrl}}/api/expenses
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 4500,
+  "category": "Food",
+  "description": "Lunch at Mama Put"
+}
+```
+
+**Response: `201 Created`**
+
+```json
+{
+  "id": "bedf30f7-8635-4c2b-aef1-1099c3bf9848",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "amount": 4500,
+  "category": "Food",
+  "description": "Lunch at Mama Put",
+  "date": "2026-10-22T21:54:25.177Z",
+  "createdAt": "2026-10-22T21:54:25.179Z"
+}
+```
+
+> Also reduces the balance by the amount, in one atomic step. `date` defaults to now.
+
+#### E2. Record another expense
+
+```http
+POST {{baseUrl}}/api/expenses
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 2500,
+  "category": "Transport",
+  "description": "Bolt to work",
+  "date": "2026-10-20T08:30:00Z"
+}
+```
+
+**Response: `201 Created`**
+
+```json
+{
+  "id": "d6d32d21-b77c-41cc-9053-c83ef9c576ad",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "amount": 2500,
+  "category": "Transport",
+  "description": "Bolt to work",
+  "date": "2026-10-20T08:30:00.000Z",
+  "createdAt": "2026-10-22T21:54:25.183Z"
+}
+```
+
+#### E3. Record an expense larger than the balance
+
+```http
+POST {{baseUrl}}/api/expenses
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 9999999,
+  "category": "Shopping"
+}
+```
+
+**Response: `422 Unprocessable Entity`**
+
+```json
+{
+  "error": "Insufficient balance"
+}
+```
+
+> Nothing is recorded and the balance is unchanged, even if many requests arrive at once.
+
+#### E4. Record an invalid expense
+
+```http
+POST {{baseUrl}}/api/expenses
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 0,
+  "date": "yesterday"
+}
+```
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "amount",
+      "message": "amount must be greater than or equal to 0.01"
+    },
+    {
+      "field": "date",
+      "message": "date must be an ISO 8601 date, e.g. 2026-12-01 or 2026-12-01T09:00:00Z"
+    }
+  ]
+}
+```
+
+#### E5. List my expenses
+
+```http
+GET {{baseUrl}}/api/expenses
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`** (header `X-Total-Count: 3`)
+
+```json
+[
+  {
+    "id": "5ccb45c4-a29a-40dd-9d4b-fd134cb14789",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "amount": 18000,
+    "category": "food",
+    "description": "Groceries",
+    "date": "2026-10-22T21:54:25.185Z",
+    "createdAt": "2026-10-22T21:54:25.186Z"
+  },
+  {
+    "id": "bedf30f7-8635-4c2b-aef1-1099c3bf9848",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "amount": 4500,
+    "category": "Food",
+    "description": "Lunch at Mama Put",
+    "date": "2026-10-22T21:54:25.177Z",
+    "createdAt": "2026-10-22T21:54:25.179Z"
+  },
+  {
+    "id": "d6d32d21-b77c-41cc-9053-c83ef9c576ad",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "amount": 2500,
+    "category": "Transport",
+    "description": "Bolt to work",
+    "date": "2026-10-20T08:30:00.000Z",
+    "createdAt": "2026-10-22T21:54:25.183Z"
+  }
+]
+```
+
+> Newest first. The `X-Total-Count` response header is the number of matches across all pages (here shown below the response).
+
+#### E6. Filter and page the expense list
+
+```http
+GET {{baseUrl}}/api/expenses?category=food&from=2026-10-01&to=2026-10-31&minAmount=1000&limit=10&offset=0
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`** (header `X-Total-Count: 2`)
+
+```json
+[
+  {
+    "id": "5ccb45c4-a29a-40dd-9d4b-fd134cb14789",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "amount": 18000,
+    "category": "food",
+    "description": "Groceries",
+    "date": "2026-10-22T21:54:25.185Z",
+    "createdAt": "2026-10-22T21:54:25.186Z"
+  },
+  {
+    "id": "bedf30f7-8635-4c2b-aef1-1099c3bf9848",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "amount": 4500,
+    "category": "Food",
+    "description": "Lunch at Mama Put",
+    "date": "2026-10-22T21:54:25.177Z",
+    "createdAt": "2026-10-22T21:54:25.179Z"
+  }
+]
+```
+
+> Filters: `from`, `to` (whole UTC days), `category` (any letter case), `minAmount`, `maxAmount`. Paging: `limit` (default 100, max 500) and `offset`.
+
+#### E7. Edit an expense
+
+```http
+PUT {{baseUrl}}/api/expenses/bedf30f7-8635-4c2b-aef1-1099c3bf9848
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 5000,
+  "description": "Lunch and a drink"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "bedf30f7-8635-4c2b-aef1-1099c3bf9848",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "amount": 5000,
+  "category": "Food",
+  "description": "Lunch and a drink",
+  "date": "2026-10-22T21:54:25.177Z",
+  "createdAt": "2026-10-22T21:54:25.179Z"
+}
+```
+
+> Send only the fields to change. The balance moves by the difference (here 500 more is taken).
+
+#### E8. Edit an expense to more than the balance allows
+
+```http
+PUT {{baseUrl}}/api/expenses/bedf30f7-8635-4c2b-aef1-1099c3bf9848
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 9999999
+}
+```
+
+**Response: `422 Unprocessable Entity`**
+
+```json
+{
+  "error": "Insufficient balance"
+}
+```
+
+#### E9. Delete an expense
+
+```http
+DELETE {{baseUrl}}/api/expenses/d6d32d21-b77c-41cc-9053-c83ef9c576ad
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "ok": true,
+  "balance": 127000
+}
+```
+
+> The amount is added back to the balance; the response shows the new balance.
+
+</details>
+
+### Files
+
+<details>
+<summary>Show 3 examples</summary>
+
+#### F1. Upload a file
+
+```http
+POST {{baseUrl}}/api/files
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · Body type `form-data`: key `file` (type File) = `receipt.png`
+
+**Response: `201 Created`**
+
+```json
+{
+  "id": "8a503c4b-245c-4c2d-ad05-0cd5154b976e",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "filename": "0922107c-f9c1-4217-8c43-e08c739ae12b.png",
+  "originalName": "receipt.png",
+  "mimetype": "image/png",
+  "size": 70,
+  "createdAt": "2026-10-22T21:54:25.378Z"
+}
+```
+
+> Send `multipart/form-data` with a single field named `file`. Allowed: JPEG, PNG, WebP, GIF, PDF, MP4, MOV, WebM. Maximum 20 MB.
+
+#### F2. List my files
+
+```http
+GET {{baseUrl}}/api/files
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+[
+  {
+    "id": "8a503c4b-245c-4c2d-ad05-0cd5154b976e",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "filename": "0922107c-f9c1-4217-8c43-e08c739ae12b.png",
+    "originalName": "receipt.png",
+    "mimetype": "image/png",
+    "size": 70,
+    "createdAt": "2026-10-22T21:54:25.378Z"
+  }
+]
+```
+
+#### F3. Open an uploaded file
+
+```http
+GET {{baseUrl}}/uploads/0922107c-f9c1-4217-8c43-e08c739ae12b.png
+```
+
+**Response: `200 OK`**
+
+_The file contents (an image in this example)._
+
+> Returns the file itself. The link is public to anyone who has it, so do not treat it as private storage.
+
+</details>
+
+### Dashboard
+
+<details>
+<summary>Show 1 example</summary>
+
+#### D1. Home screen data
+
+```http
+GET {{baseUrl}}/api/dashboard
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "user": {
+    "balance": 127000,
+    "nextIncomeAmount": 250000,
+    "nextIncomeDate": "2026-11-30T00:00:00.000Z",
+    "savingsGoalAmount": 100000
+  },
+  "safeToSpend": {
+    "dailySafeToSpend": 179.49,
+    "remainingToday": -22820.51,
+    "daysUntilNextIncome": 39,
+    "upcomingBillsTotal": 95000,
+    "savingsReserve": 25000,
+    "availableAfterCommitments": 7000,
+    "spentToday": 23000,
+    "warnings": [
+      "Already over today's safe amount."
+    ]
+  },
+  "recentExpenses": [
+    {
+      "id": "5ccb45c4-a29a-40dd-9d4b-fd134cb14789",
+      "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+      "amount": 18000,
+      "category": "food",
+      "description": "Groceries",
+      "date": "2026-10-22T21:54:25.185Z",
+      "createdAt": "2026-10-22T21:54:25.186Z"
+    },
+    {
+      "id": "bedf30f7-8635-4c2b-aef1-1099c3bf9848",
+      "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+      "amount": 5000,
+      "category": "Food",
+      "description": "Lunch and a drink",
+      "date": "2026-10-22T21:54:25.177Z",
+      "createdAt": "2026-10-22T21:54:25.179Z"
+    }
+  ],
+  "unreadAlerts": 0
+}
+```
+
+> `remainingToday` below zero means the user is over today's safe amount. `unreadAlerts` is the number for the notification badge.
+
+</details>
+
+### Calculators
+
+<details>
+<summary>Show 4 examples</summary>
+
+#### C1. Can I afford this purchase?
+
+```http
+POST {{baseUrl}}/api/can-i-afford
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "amount": 20000
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "recommendation": "NotRecommended",
+  "reason": "This is well above your safe daily amount.",
+  "explanation": "This is well above your safe daily amount. After this you would have about 107000 left.",
+  "remainingAfterPurchase": -42820.51,
+  "cashFlowWarnings": [],
+  "safeToSpend": {
+    "dailySafeToSpend": 179.49,
+    "remainingToday": -22820.51,
+    "daysUntilNextIncome": 39,
+    "upcomingBillsTotal": 95000,
+    "savingsReserve": 25000,
+    "availableAfterCommitments": 7000,
+    "spentToday": 23000,
+    "warnings": [
+      "Already over today's safe amount."
+    ]
+  }
+}
+```
+
+> `recommendation` is `Safe`, `ThinkTwice` or `NotRecommended`. Nothing is spent.
+
+#### C2. Projected balance after a new EMI
+
+```http
+POST {{baseUrl}}/api/projected-balance
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "monthlyIncome": 450000,
+  "ordinaryExpenses": 180000,
+  "existingEMI": 35000,
+  "proposedEMI": 50000
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "monthlyIncome": 450000,
+  "ordinaryExpenses": 180000,
+  "existingEMI": 35000,
+  "proposedEMI": 50000,
+  "projectedBalance": 185000,
+  "shortfall": 0,
+  "isNegative": false,
+  "warning": null
+}
+```
+
+#### C3. Cash-flow projection
+
+```http
+POST {{baseUrl}}/api/cash-flow
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "monthlyGrossIncome": 300000,
+  "otherMonthlyExpenses": 150000,
+  "existingMonthlyDebtPayments": 40000,
+  "monthlyPayment": 60000,
+  "startingCashBalance": 50000,
+  "months": 4
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "projection": [
+    {
+      "month": 1,
+      "startingBalance": 50000,
+      "income": 300000,
+      "debtPayments": 100000,
+      "otherExpenses": 150000,
+      "endingBalance": 100000,
+      "isNegative": false
+    },
+    {
+      "month": 2,
+      "startingBalance": 100000,
+      "income": 300000,
+      "debtPayments": 100000,
+      "otherExpenses": 150000,
+      "endingBalance": 150000,
+      "isNegative": false
+    },
+    {
+      "month": 3,
+      "startingBalance": 150000,
+      "income": 300000,
+      "debtPayments": 100000,
+      "otherExpenses": 150000,
+      "endingBalance": 200000,
+      "isNegative": false
+    },
+    {
+      "month": 4,
+      "startingBalance": 200000,
+      "income": 300000,
+      "debtPayments": 100000,
+      "otherExpenses": 150000,
+      "endingBalance": 250000,
+      "isNegative": false
+    }
+  ],
+  "summary": {
+    "totalMonths": 4,
+    "negativeMonths": [],
+    "lowestEndingBalance": 100000,
+    "warnings": []
+  }
+}
+```
+
+#### C4. Loan affordability
+
+```http
+POST {{baseUrl}}/api/affordability
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "monthlyGrossIncome": 400000,
+  "otherMonthlyExpenses": 150000,
+  "existingMonthlyDebtPayments": 30000,
+  "proposedMonthlyPayment": 50000,
+  "targetDtiRatio": 0.4,
+  "annualInterestRate": 0.18,
+  "loanTermMonths": 24
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "monthlyIncome": 400000,
+  "ordinaryExpenses": 150000,
+  "existingEMI": 30000,
+  "proposedEMI": 50000,
+  "projectedBalance": 170000,
+  "shortfall": 0,
+  "isNegative": false,
+  "warning": null,
+  "maxAffordableMonthlyPayment": 130000,
+  "maxAffordableLoanAmount": 2603952.7,
+  "debtToIncomeRatio": 0.2,
+  "isAffordable": true,
+  "warnings": []
+}
+```
+
+> `annualInterestRate` is a fraction: `0.18` means 18%.
+
+</details>
+
+### Analytics
+
+<details>
+<summary>Show 3 examples</summary>
+
+#### A1. Spending summary
+
+```http
+GET {{baseUrl}}/api/analytics/summary?from=2026-10-01&to=2026-10-31&groupBy=day
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "from": "2026-10-01",
+  "to": "2026-10-31",
+  "groupBy": "day",
+  "days": 31,
+  "totalSpent": 23000,
+  "transactionCount": 2,
+  "averageDailySpend": 741.94,
+  "topCategory": "Food",
+  "byCategory": [
+    {
+      "category": "Food",
+      "total": 23000,
+      "count": 2,
+      "percent": 100
+    }
+  ],
+  "series": [
+    {
+      "period": "2026-10-22",
+      "total": 23000,
+      "count": 2
+    }
+  ]
+}
+```
+
+> `byCategory` is largest first. Days with no spending are left out of `series`, so fill the gaps with zero when charting.
+
+#### A2. Spending summary by month
+
+```http
+GET {{baseUrl}}/api/analytics/summary?from=2026-09-01&to=2026-10-31&groupBy=month
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "from": "2026-09-01",
+  "to": "2026-10-31",
+  "groupBy": "month",
+  "days": 61,
+  "totalSpent": 23000,
+  "transactionCount": 2,
+  "averageDailySpend": 377.05,
+  "topCategory": "Food",
+  "byCategory": [
+    {
+      "category": "Food",
+      "total": 23000,
+      "count": 2,
+      "percent": 100
+    }
+  ],
+  "series": [
+    {
+      "period": "2026-10",
+      "total": 23000,
+      "count": 2
+    }
+  ]
+}
+```
+
+#### A3. Summary with an invalid date
+
+```http
+GET {{baseUrl}}/api/analytics/summary?from=2026-02-30
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "from",
+      "message": "from must be a real date like 2026-12-01"
+    }
+  ]
+}
+```
+
+</details>
+
+### Alerts
+
+<details>
+<summary>Show 11 examples</summary>
+
+#### A1. Set a low-balance rule
+
+```http
+PUT {{baseUrl}}/api/alert-rules
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "type": "low_balance",
+  "threshold": 100000
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "3949a4dd-b406-434d-826c-7e29034520d0",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "type": "low_balance",
+  "threshold": 100000,
+  "category": null,
+  "enabled": true,
+  "createdAt": "2026-10-22T21:54:25.467Z",
+  "updatedAt": "2026-10-22T21:54:25.467Z"
+}
+```
+
+> There are no default rules. Setting the same type again updates it instead of adding another.
+
+#### A2. Set a daily spending limit
+
+```http
+PUT {{baseUrl}}/api/alert-rules
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "type": "daily_spend_limit",
+  "threshold": 20000
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "5b976a9f-0e7d-44f2-aeb1-0869f5ea7ae9",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "type": "daily_spend_limit",
+  "threshold": 20000,
+  "category": null,
+  "enabled": true,
+  "createdAt": "2026-10-22T21:54:25.471Z",
+  "updatedAt": "2026-10-22T21:54:25.471Z"
+}
+```
+
+#### A3. Set a category budget
+
+```http
+PUT {{baseUrl}}/api/alert-rules
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "type": "category_monthly_budget",
+  "threshold": 20000,
+  "category": "Food"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "7e18ec3e-18d7-49ea-a38d-a2929cce9572",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "type": "category_monthly_budget",
+  "threshold": 20000,
+  "category": "Food",
+  "enabled": true,
+  "createdAt": "2026-10-22T21:54:25.477Z",
+  "updatedAt": "2026-10-22T21:54:25.477Z"
+}
+```
+
+> `category` is required for this type, and is rejected for the others.
+
+#### A4. Get warned before a bill is due
+
+```http
+PUT {{baseUrl}}/api/alert-rules
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "type": "bill_due_soon",
+  "threshold": 7
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "c9d0f53a-5b70-48f7-9936-72f97cec80f9",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "type": "bill_due_soon",
+  "threshold": 7,
+  "category": null,
+  "enabled": true,
+  "createdAt": "2026-10-22T21:54:25.482Z",
+  "updatedAt": "2026-10-22T21:54:25.482Z"
+}
+```
+
+> `threshold` is a number of days (1 to 60), today included.
+
+#### A5. Warn when over today's safe-to-spend amount
+
+```http
+PUT {{baseUrl}}/api/alert-rules
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "type": "over_safe_to_spend"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "a96b02c4-d4db-401d-92aa-83dc0bbb8a87",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "type": "over_safe_to_spend",
+  "threshold": null,
+  "category": null,
+  "enabled": true,
+  "createdAt": "2026-10-22T21:54:25.488Z",
+  "updatedAt": "2026-10-22T21:54:25.488Z"
+}
+```
+
+> This type takes no threshold: it compares today's spending with the safe-to-spend figure.
+
+#### A6. Set a rule with a threshold that does not fit
+
+```http
+PUT {{baseUrl}}/api/alert-rules
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "type": "bill_due_soon",
+  "threshold": 90
+}
+```
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "threshold",
+      "message": "threshold must be less than or equal to 60"
+    }
+  ]
+}
+```
+
+#### A7. List my alert rules
+
+```http
+GET {{baseUrl}}/api/alert-rules
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+[
+  {
+    "id": "3949a4dd-b406-434d-826c-7e29034520d0",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "type": "low_balance",
+    "threshold": 100000,
+    "category": null,
+    "enabled": true,
+    "createdAt": "2026-10-22T21:54:25.467Z",
+    "updatedAt": "2026-10-22T21:54:25.467Z"
+  },
+  {
+    "id": "5b976a9f-0e7d-44f2-aeb1-0869f5ea7ae9",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "type": "daily_spend_limit",
+    "threshold": 20000,
+    "category": null,
+    "enabled": true,
+    "createdAt": "2026-10-22T21:54:25.471Z",
+    "updatedAt": "2026-10-22T21:54:25.471Z"
+  },
+  {
+    "id": "7e18ec3e-18d7-49ea-a38d-a2929cce9572",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "type": "category_monthly_budget",
+    "threshold": 20000,
+    "category": "Food",
+    "enabled": true,
+    "createdAt": "2026-10-22T21:54:25.477Z",
+    "updatedAt": "2026-10-22T21:54:25.477Z"
+  },
+  {
+    "id": "c9d0f53a-5b70-48f7-9936-72f97cec80f9",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "type": "bill_due_soon",
+    "threshold": 7,
+    "category": null,
+    "enabled": true,
+    "createdAt": "2026-10-22T21:54:25.482Z",
+    "updatedAt": "2026-10-22T21:54:25.482Z"
+  },
+  {
+    "id": "a96b02c4-d4db-401d-92aa-83dc0bbb8a87",
+    "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+    "type": "over_safe_to_spend",
+    "threshold": null,
+    "category": null,
+    "enabled": true,
+    "createdAt": "2026-10-22T21:54:25.488Z",
+    "updatedAt": "2026-10-22T21:54:25.488Z"
+  }
+]
+```
+
+#### A8. List my alerts
+
+```http
+GET {{baseUrl}}/api/alerts?unread=true&limit=20
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "alerts": [
+    {
+      "id": "f6a90b2e-5b69-4be9-9ef0-e03e1b352722",
+      "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+      "ruleId": "a96b02c4-d4db-401d-92aa-83dc0bbb8a87",
+      "type": "over_safe_to_spend",
+      "message": "You've spent 23000.00 today, more than your safe amount of 179.49.",
+      "data": {
+        "spent": 23000,
+        "dailySafeToSpend": 179.49
+      },
+      "periodKey": "2026-10-22",
+      "createdAt": "2026-10-22T21:54:25.492Z",
+      "readAt": null
+    },
+    {
+      "id": "68e2c500-0467-4a55-99b3-a6731aaa5682",
+      "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+      "ruleId": "c9d0f53a-5b70-48f7-9936-72f97cec80f9",
+      "type": "bill_due_soon",
+      "message": "Internet (15000.00) is due in 6 days.",
+      "data": {
+        "name": "Internet",
+        "amount": 15000,
+        "billId": "5733818a-cc97-4849-a7a6-89d7342aac31",
+        "dueDate": "2026-10-28T00:00:00.000Z",
+        "daysAway": 6
+      },
+      "periodKey": "bill:5733818a-cc97-4849-a7a6-89d7342aac31",
+      "createdAt": "2026-10-22T21:54:25.486Z",
+      "readAt": null
+    },
+    {
+      "id": "7b730c62-c3d3-47e8-972d-ce5b5bcb38f2",
+      "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+      "ruleId": "7e18ec3e-18d7-49ea-a38d-a2929cce9572",
+      "type": "category_monthly_budget",
+      "message": "You've spent 23000.00 on Food this month, over your budget of 20000.00.",
+      "data": {
+        "spent": 23000,
+        "category": "Food",
+        "threshold": 20000
+      },
+      "periodKey": "2026-10",
+      "createdAt": "2026-10-22T21:54:25.479Z",
+      "readAt": null
+    },
+    {
+      "id": "7ba0db79-8f55-411f-a6fd-6b90b20bce3b",
+      "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+      "ruleId": "5b976a9f-0e7d-44f2-aeb1-0869f5ea7ae9",
+      "type": "daily_spend_limit",
+      "message": "You've spent 23000.00 today, over your daily limit of 20000.00.",
+      "data": {
+        "spent": 23000,
+        "threshold": 20000
+      },
+      "periodKey": "2026-10-22",
+      "createdAt": "2026-10-22T21:54:25.473Z",
+      "readAt": null
+    }
+  ],
+  "unreadCount": 4,
+  "total": 4
+}
+```
+
+> Newest first. Rules are checked when this is called, so alerts that depend on the calendar (a bill coming due) appear without any other action. Each rule fires once per day, month or bill.
+
+#### A9. Mark one alert as read
+
+```http
+POST {{baseUrl}}/api/alerts/f6a90b2e-5b69-4be9-9ef0-e03e1b352722/read
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "id": "f6a90b2e-5b69-4be9-9ef0-e03e1b352722",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "ruleId": "a96b02c4-d4db-401d-92aa-83dc0bbb8a87",
+  "type": "over_safe_to_spend",
+  "message": "You've spent 23000.00 today, more than your safe amount of 179.49.",
+  "data": {
+    "spent": 23000,
+    "dailySafeToSpend": 179.49
+  },
+  "periodKey": "2026-10-22",
+  "createdAt": "2026-10-22T21:54:25.492Z",
+  "readAt": "2026-10-22T21:54:25.508Z"
+}
+```
+
+#### A10. Mark all alerts as read
+
+```http
+POST {{baseUrl}}/api/alerts/read-all
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "updated": 3
+}
+```
+
+#### A11. Delete an alert rule
+
+```http
+DELETE {{baseUrl}}/api/alert-rules/3949a4dd-b406-434d-826c-7e29034520d0
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "ok": true
+}
+```
+
+> Alerts the rule already produced stay in the history.
+
+</details>
 
 ## Scripts
 

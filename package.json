@@ -2,6 +2,7 @@
   "name": "moneyguard-backend",
   "version": "1.0.0",
   "description": "MoneyGuard backend",
+  "author": "Jonathan Adewale",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
