@@ -298,7 +298,6 @@ tokens in production, since a token in a log is an account takeover.
 | Abuse and overload | per-IP limits, DB pool of 10 with a 5 s wait cap, 10 s statement timeout, `503` + `Retry-After` when saturated |
 | File uploads | allow-list of MIME types, extension chosen by the server (never from the client's name), random UUID filenames, 20 MB cap, `X-Content-Type-Options: nosniff` on `/uploads` |
 | Logs | one line per request with a request id; query strings, bodies, passwords and tokens are not logged |
-| Container | image runs as an unprivileged user with a `/health` check |
 
 ### Alerts, analytics and transactions
 

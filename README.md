@@ -126,36 +126,27 @@ Throughput scales with more instances behind a load balancer plus `REDIS_URL`; t
 Add a new file `src/db/migrations/002_what_it_does.sql` and run `npm run migrate`. Files run once, in name order,
 each in its own transaction. Never edit a migration that has already been applied; add a new one.
 
-## Docker
-
-```bash
-docker build -t moneyguard-backend .
-
-docker run --rm --env-file .env moneyguard-backend npm run migrate      # once per release
-docker run -d -p 3000:3000 --env-file .env \
-  -v moneyguard-uploads:/app/src/uploads moneyguard-backend
-```
-
-The image runs as an unprivileged user and has a health check on `/health`.
-
 ## Deploying to Render
 
-Create a **Web Service** from the GitHub repo. The included `Dockerfile` is the simplest route (choose the Docker runtime).
+Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 20 or newer).
 
 | Setting | Value |
 |---|---|
+| Build command | `npm ci --omit=dev` |
+| Start command | `npm run migrate && npm start` |
 | Health check path | `/health` |
+| `NODE_ENV` | `production` |
 | `DATABASE_URL` | your Neon / Supabase / Render Postgres connection string |
 | `JWT_SECRET` | a long random value (see Configuration). The server refuses to start without it in production |
 | `TRUST_PROXY` | `1` (Render puts one proxy in front of the app) |
 | `DB_CONNECT_TIMEOUT_MS` | `20000` if the database is hosted far away or sleeps when idle |
 
-`PORT` is set by Render and read by the app; `NODE_ENV=production` is already set in the image.
+`PORT` is set by Render and read by the app.
 
-**Migrations:** run `npm run migrate` on every release, before the new version takes traffic. Render's *Pre-Deploy Command* does this on paid plans. On the free plan, set the start command to `sh -c "npm run migrate && node src/server.js"` (it is safe to run repeatedly, and concurrent instances wait for each other).
+**Migrations:** the start command above applies new migrations every time the service starts. That is safe to repeat, and instances starting together wait for each other. On a paid plan you can instead run `npm run migrate` as Render's *Pre-Deploy Command* and keep the start command as `npm start`.
 
 **Things to know on Render:**
-- The disk is wiped on every deploy and restart, so **uploaded files disappear** unless you attach a persistent disk at `/app/src/uploads` (paid). See the limitations below.
+- The disk is wiped on every deploy and restart, so **uploaded files disappear** unless you attach a persistent disk mounted on the `src/uploads` folder (paid). See the limitations below.
 - Free web services go to sleep when idle, and the first request after that is slow.
 - Rate limits and idempotency are kept in memory, which is fine for one instance. Set `REDIS_URL` before running more than one.
 - Password-reset emails and alert notifications are not sent until a sender is plugged into `src/services/mailer.js` and `src/services/notifier.js`.

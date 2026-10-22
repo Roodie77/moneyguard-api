@@ -32,10 +32,3 @@ jobs:
       - run: npm test
       - name: Known vulnerabilities in production dependencies
         run: npm audit --omit=dev --audit-level=high
-
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Image builds
-        run: docker build -t moneyguard-backend .
