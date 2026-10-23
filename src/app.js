@@ -45,9 +45,30 @@ app.get('/docs', (req, res) => res.type('html').send(`<!doctype html>
 <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.34.0/swagger-ui-bundle.js"></script>
 <script>SwaggerUIBundle({ url: '/openapi.yaml', dom_id: '#ui' })</script></body></html>`));
 
+// Which websites may call the API from a browser. Set CORS_ORIGINS to a comma-separated list.
+function corsOrigin(origin, callback) {
+  // No Origin header: mobile app, Postman, curl. CORS only applies to browsers.
+  if (!origin) return callback(null, true);
+
+  const allowed = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Local development with no list set: allow everything.
+  if (allowed.length === 0 && process.env.NODE_ENV !== 'production') {
+    return callback(null, true);
+  }
+
+  // Otherwise only the listed origins; others get no CORS headers and the browser blocks them.
+  return callback(null, allowed.includes(origin));
+}
+
 // Browsers only let scripts read these response headers if they are listed here.
 app.use(cors({
+  origin: corsOrigin,
   exposedHeaders: ['X-Request-Id', 'X-Total-Count', 'Retry-After', 'Idempotent-Replayed', 'RateLimit-Limit', 'RateLimit-Remaining', 'RateLimit-Reset'],
+  maxAge: 600,
 }));
 app.use(express.json({ limit: '10kb' }));
 app.use(globalLimiter);
