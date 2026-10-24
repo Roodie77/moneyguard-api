@@ -457,7 +457,7 @@ One call for the whole home screen:
 
 What the numbers mean:
 
-- **`dailySafeToSpend`**: "You can spend about this much each day until the next pay." It is never negative.
+- **`dailySafeToSpend`**: "You can spend about this much each day until the next pay." It is never negative. It is worked out from what you had **this morning** (today's spending is added back to the balance), so it **stays the same all day** and does not shrink as you spend.
 - **`spentToday`**: how much was spent so far today. A "day" is a **UTC** day, so it flips at midnight UTC, not at the phone's midnight.
 - **`remainingToday`**: `dailySafeToSpend − spentToday`. **Negative means the user is over budget today.** Show it in red.
 - **`upcomingBillsTotal`**: bills due on or before the day the next pay arrives. A bill with **no due date**, or one already past due, is **always counted**, so delete bills the user has paid.

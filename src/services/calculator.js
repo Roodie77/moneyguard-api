@@ -181,9 +181,12 @@ export function calculateSafeToSpend({ balance = 0, nextIncomeDate, bills = [], 
   const safeSavings = Math.max(safeNum(savingsGoalAmount), 0);
   const savingsReserve = money(Math.min(safeSavings / 4 || 0, safeBalance * 0.2));
   const available = money(safeBalance - upcomingBillsTotal - savingsReserve);
-  const dailySafe = money(Math.max(0, available / days));
   const safeExpenses = Array.isArray(todayExpenses) ? todayExpenses : [];
   const spentToday = safeExpenses.reduce((s, e) => s + Math.max(safeNum(e.amount), 0), 0);
+  // Today's spending has already been taken out of the balance. Add it back to get what was available this morning,
+  // so it is not counted twice (once as a smaller balance, once as "spent today"). That makes the daily allowance steady
+  // through the day, and "left today" is exactly the allowance minus what was spent.
+  const dailySafe = money(Math.max(0, (available + spentToday) / days));
   const remainingToday = money(dailySafe - spentToday);
 
   if (available < 0) warnings.push('Commitments exceed current balance.');

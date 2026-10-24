@@ -96,9 +96,37 @@ test('safe to spend: bills due before the next income are reserved, later ones a
   });
   assert.equal(r.upcomingBillsTotal, 200);
   assert.equal(r.availableAfterCommitments, 800);
-  assert.equal(r.dailySafeToSpend, round2(800 / r.daysUntilNextIncome)); // days is 10, or 11 across a DST change
+  // The 20 spent today is already out of the 1000, so this morning there was 820 to share (days is 10, or 11 across a DST change).
+  assert.equal(r.dailySafeToSpend, round2(820 / r.daysUntilNextIncome));
   assert.equal(r.spentToday, 20);
   assert.equal(r.remainingToday, round2(r.dailySafeToSpend - 20));
+});
+
+test('safe to spend: spending is not counted twice, so the daily allowance stays the same all day', () => {
+  const base = { nextIncomeDate: daysFromNow(10) };
+  const morning = calculateSafeToSpend({ ...base, balance: 1000 });
+  // After spending 60 the balance is 940 and 60 is "spent today". The allowance must not shrink because of it.
+  const evening = calculateSafeToSpend({ ...base, balance: 940, todayExpenses: [{ amount: 60 }] });
+  assert.equal(evening.dailySafeToSpend, morning.dailySafeToSpend);
+  assert.equal(evening.remainingToday, round2(morning.dailySafeToSpend - 60));
+});
+
+test('safe to spend: spending a little less than the allowance never shows "nothing left" or "over budget"', () => {
+  const base = { nextIncomeDate: daysFromNow(10) };
+  const allowance = calculateSafeToSpend({ ...base, balance: 1000 }).dailySafeToSpend; // about 100
+  const spent = round2(allowance - 5);
+  const r = calculateSafeToSpend({ ...base, balance: round2(1000 - spent), todayExpenses: [{ amount: spent }] });
+  assert.equal(r.remainingToday, 5);
+  assert.ok(!r.warnings.includes("Already over today's safe amount."));
+});
+
+test('safe to spend: spending more than the allowance does show as over budget, by the right amount', () => {
+  const base = { nextIncomeDate: daysFromNow(10) };
+  const allowance = calculateSafeToSpend({ ...base, balance: 1000 }).dailySafeToSpend;
+  const spent = round2(allowance + 30);
+  const r = calculateSafeToSpend({ ...base, balance: round2(1000 - spent), todayExpenses: [{ amount: spent }] });
+  assert.equal(r.remainingToday, -30);
+  assert.ok(r.warnings.includes("Already over today's safe amount."));
 });
 
 test('safe to spend: savings reserve is a quarter of the goal, capped at 20% of the balance', () => {

@@ -1191,7 +1191,7 @@ components:
       type: object
       required: [dailySafeToSpend, remainingToday, daysUntilNextIncome, upcomingBillsTotal, savingsReserve, availableAfterCommitments, spentToday, warnings]
       properties:
-        dailySafeToSpend: { type: number, description: 'Balance minus upcoming bills and savings reserve, divided by days until next income. Never negative.' }
+        dailySafeToSpend: { type: number, description: 'Balance plus what was already spent today (so spending is not counted twice), minus upcoming bills and savings reserve, divided by days until next income. Never negative. Steady through the day.' }
         remainingToday: { type: number, description: dailySafeToSpend minus what was already spent today. Negative means over budget. }
         daysUntilNextIncome: { type: integer, minimum: 1 }
         upcomingBillsTotal: { type: number }
