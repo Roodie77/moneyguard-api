@@ -80,6 +80,15 @@ Set in `.env` locally, as real environment variables in production.
 
 **Setting the frontend origin (CORS):** the API only accepts browser requests from the origins listed in `CORS_ORIGINS`. Until the frontend exists this is a placeholder, so every real website is blocked. To allow the real frontend, put its address in `CORS_ORIGINS` in your `.env` file when running locally, or in your host's environment variables in production (on Render, the service's *Environment* tab), then restart the server. Write the full address with `https://` and no trailing slash, and separate several addresses with commas. Mobile apps, Postman and curl are not affected by CORS.
 
+**Setting up Cloudinary (media uploads):** by default uploaded images, PDFs and videos are saved on the server's disk, which Render wipes on every deploy. To keep them on [Cloudinary](https://cloudinary.com) instead:
+
+1. Create a free Cloudinary account and copy your API credentials from its dashboard.
+2. Put them in `.env` (locally) or in the host's environment variables (on Render), as one line with no quotes and no spaces around the `=`: `CLOUDINARY_URL=cloudinary://API_KEY:API_SECRET@CLOUD_NAME`. Never commit it.
+3. Run `npm run migrate` once (migration 004 adds the columns that remember each file's link), then restart the server. A restart is needed because `.env` is only read at start-up.
+4. Upload with `POST /api/files` (see the Files examples below). The answer has a `url`: open it in a browser or use it as an image or video source. The file also appears in your Cloudinary Media Library under `moneyguard/<userId>/`; change the top folder with `CLOUDINARY_FOLDER`.
+
+Without `CLOUDINARY_URL` nothing changes: files stay on disk. Cloudinary links are hard to guess but not private, and Cloudinary may block opening PDFs until you allow it in its security settings.
+
 ## API endpoints
 
 Base URL (local): `http://localhost:3000`. Every endpoint below except the ones marked **Public** needs the header `Authorization: Bearer <access token>`.
@@ -102,7 +111,7 @@ The interactive reference is at `/docs` (Swagger UI) and the contract is [`src/d
 | Expenses | `GET /api/expenses` | Yes | List with filters and paging |
 | Expenses | `POST /api/expenses` | Yes | Record an expense (refused with 422 if it exceeds the balance) |
 | Expenses | `PUT /api/expenses/:id`, `DELETE /api/expenses/:id` | Yes | Edit or delete; the balance moves with it |
-| Files | `POST /api/files`, `GET /api/files`, `GET /uploads/:filename` | Yes / Yes / Public link | Upload and list files |
+| Files | `POST /api/files`, `GET /api/files`, `GET /uploads/:filename` | Yes / Yes / Public link | Upload and list files. Each file comes back with a `url` to open it (a Cloudinary link, or `/uploads/...` when kept on the server's disk). `/uploads/:filename` exists only for disk-kept files |
 | Dashboard | `GET /api/dashboard` | Yes | Balance, safe-to-spend, recent expenses, unread alert count |
 | Calculators | `POST /api/can-i-afford` | Yes | Can I afford this purchase today? |
 | Calculators | `POST /api/projected-balance`, `/api/cash-flow`, `/api/affordability` | Yes | EMI, cash-flow and loan affordability maths |
@@ -1072,11 +1081,31 @@ POST {{baseUrl}}/api/files
   "originalName": "receipt.png",
   "mimetype": "image/png",
   "size": 70,
+  "url": "/uploads/0922107c-f9c1-4217-8c43-e08c739ae12b.png",
+  "publicId": null,
+  "resourceType": null,
   "createdAt": "2026-10-22T21:54:25.378Z"
 }
 ```
 
-> Send `multipart/form-data` with a single field named `file`. Allowed: JPEG, PNG, WebP, GIF, PDF, MP4, MOV, WebM. Maximum 20 MB.
+With `CLOUDINARY_URL` set, the same request returns a Cloudinary link instead (your cloud name replaces `your-cloud`):
+
+```json
+{
+  "id": "8a503c4b-245c-4c2d-ad05-0cd5154b976e",
+  "userId": "10133380-4bf5-4cf3-b93f-2146b1e6113e",
+  "filename": "x0utrce9vdoyllonl6fd",
+  "originalName": "receipt.png",
+  "mimetype": "image/png",
+  "size": 70,
+  "url": "https://res.cloudinary.com/your-cloud/image/upload/v1792870628/moneyguard/10133380-4bf5-4cf3-b93f-2146b1e6113e/x0utrce9vdoyllonl6fd.png",
+  "publicId": "moneyguard/10133380-4bf5-4cf3-b93f-2146b1e6113e/x0utrce9vdoyllonl6fd",
+  "resourceType": "image",
+  "createdAt": "2026-10-22T21:54:25.378Z"
+}
+```
+
+> Send `multipart/form-data` with a single field named `file`. Allowed: JPEG, PNG, WebP, GIF, PDF, MP4, MOV, WebM. Maximum 20 MB. Open the file by its `url`: if it starts with `http` use it as it is, otherwise put the server's address in front of it.
 
 #### F2. List my files
 
@@ -1097,6 +1126,9 @@ GET {{baseUrl}}/api/files
     "originalName": "receipt.png",
     "mimetype": "image/png",
     "size": 70,
+    "url": "/uploads/0922107c-f9c1-4217-8c43-e08c739ae12b.png",
+    "publicId": null,
+    "resourceType": null,
     "createdAt": "2026-10-22T21:54:25.378Z"
   }
 ]
@@ -1112,7 +1144,7 @@ GET {{baseUrl}}/uploads/0922107c-f9c1-4217-8c43-e08c739ae12b.png
 
 _The file contents (an image in this example)._
 
-> Returns the file itself. The link is public to anyone who has it, so do not treat it as private storage.
+> Returns the file itself. Only used for files kept on the server's disk; files on Cloudinary are opened by their own `url`. The link is public to anyone who has it, so do not treat it as private storage.
 
 </details>
 
@@ -1910,20 +1942,20 @@ DELETE {{baseUrl}}/api/alert-rules/3949a4dd-b406-434d-826c-7e29034520d0
 
 ## Testing
 
-`npm test` starts a throwaway PostgreSQL (no setup, deleted afterwards), applies the migrations, and runs every `*.test.js` file in `test/` with Node's built-in test runner. There are about 190 tests and a full run takes around 20 seconds. To use an existing empty database instead of the throwaway one, set `TEST_DATABASE_URL`. **Never point it at production data**: the tests create users and write rows.
+`npm test` starts a throwaway PostgreSQL (no setup, deleted afterwards), applies the migrations, and runs every `*.test.js` file in `test/` with Node's built-in test runner. There are over 200 tests and a full run takes around 30 seconds. To use an existing empty database instead of the throwaway one, set `TEST_DATABASE_URL`. **Never point it at production data**: the tests create users and write rows.
 
 Most tests start the real app on a random port and call it over HTTP, like Postman would. Run `npm test` before every push.
 
 | Files | What they cover |
 |---|---|
 | `auth`, `tokens`, `edge-auth`, `edge-auth-limits` | Register, login, wrong passwords, refresh tokens (single use, reuse detection, expiry), logout, password reset, and the rate limits on those endpoints |
-| `profile`, `bills`, `uploads` | Balance, income and savings-goal updates, bills, file upload rules (allowed types, size limit, safe file names) |
+| `profile`, `bills`, `uploads`, `cloud-storage` | Balance, income and savings-goal updates, bills, file upload rules (allowed types, size limit, safe file names), and uploads to Cloudinary (tested with a fake Cloudinary, so no account is needed): the returned link, per-user folders, no copy left on disk, and the uploaded copy removed again if the database record cannot be saved |
 | `expenses`, `expenses-manage`, `expenses-race`, `overspend`, `edge-money` | Recording, filtering, paging, editing and deleting expenses, exact money maths, and that simultaneous requests can never overspend the balance |
 | `analytics` | Summary totals, per-category percentages, day and month grouping in UTC |
 | `alert-rules`, `alert-rules-validation`, `alert-engine`, `alerts-flow` | Setting thresholds, what each of the six rule types fires on, firing once per period, notifications, marking alerts read |
 | `calculator`, `calculators` | The money maths (safe-to-spend, EMI, cash flow, loan affordability), directly and through the API |
 | `idempotency` | A retry with the same key does not repeat the action; users never see each other's cached answers |
-| `edge-input`, `edge-behavior`, `edge-overload`, `platform`, `boot` | Odd input (bad dates, NUL characters), behaviour when the database is busy or down, startup and shutdown, request ids, unknown routes |
+| `edge-input`, `edge-behavior`, `edge-overload`, `platform`, `boot`, `request-logger`, `security-headers` | Odd input (bad dates, NUL characters), behaviour when the database is busy or down, startup and shutdown, request ids, unknown routes, the request log line with the client IP, Helmet's security headers, and the CORS allow-list |
 | `openapi`, `openapi-features` | `src/docs/openapi.yaml` is valid and matches the code: every route is documented and real responses match the documented schemas |
 
 Not tests: `helpers.js` (shared shortcuts such as `registerUser`), `pg.js` (starts the throwaway database) and `run.js` (what `npm test` runs).
@@ -1943,7 +1975,8 @@ src/
   validation/        Joi schemas, one per endpoint
   middleware/        auth, validate, uuidParam, rateLimit, idempotency, upload, requestLogger, errorHandler
   services/          calculator.js: pure money maths, no I/O; budget.js: safe-to-spend; alerts.js: rule engine;
-                     notifier.js: alert delivery hook; tokens.js: refresh + reset tokens; mailer.js: reset email hook
+                     notifier.js: alert delivery hook; tokens.js: refresh + reset tokens; mailer.js: reset email hook;
+                     storage.js: where uploads are kept (Cloudinary or disk)
   db/                migrate.js and migrations/*.sql
   utils/             db, redis, logger
   docs/openapi.yaml  the API contract
@@ -1996,8 +2029,11 @@ Throughput scales with more instances behind a load balancer plus `REDIS_URL`; t
 
 ## Migrations
 
-Add a new file `src/db/migrations/002_what_it_does.sql` and run `npm run migrate`. Files run once, in name order,
+Add a new file `src/db/migrations/005_what_it_does.sql` and run `npm run migrate`. Files run once, in name order,
 each in its own transaction. Never edit a migration that has already been applied; add a new one.
+
+The project has four so far (001 initial tables, 002 refresh and reset tokens, 003 alerts and analytics, 004 Cloudinary file links).
+**Run `npm run migrate` after every `git pull` that brings a new migration file**, and on every deploy (the Render start command does it for you). Skipping it makes the new code fail with errors such as `relation "..." does not exist` or `column "..." does not exist`.
 
 ## Deploying to Render
 
