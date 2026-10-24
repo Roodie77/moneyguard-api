@@ -632,7 +632,8 @@ curl -H "Authorization: Bearer <token>" -F "file=@receipt.jpg" http://localhost:
 - Answer (**201**):
 
 ```json
-{ "id": "uuid", "userId": "uuid", "filename": "9f2c....jpg", "originalName": "receipt.jpg", "mimetype": "image/jpeg", "size": 48213, "createdAt": "..." }
+{ "id": "uuid", "userId": "uuid", "filename": "9f2c....jpg", "originalName": "receipt.jpg", "mimetype": "image/jpeg", "size": 48213,
+  "url": "https://res.cloudinary.com/your-cloud/image/upload/v1/moneyguard/<userId>/9f2c....jpg", "publicId": "moneyguard/<userId>/9f2c...", "resourceType": "image", "createdAt": "..." }
 ```
 
 - **400** if there's no file, the type isn't allowed, or it's too big.
@@ -643,7 +644,12 @@ An array of the objects above, newest first.
 
 ### Show a file
 
-The picture lives at `GET /uploads/{filename}` (use the `filename` from the record, not `originalName`). No wristband is needed to load it.
+Open the **`url`** from the record. It is the only thing you need:
+
+- If the server uses Cloudinary, `url` is a full `https://res.cloudinary.com/...` link. Put it straight into an image or video view, or a browser. No wristband is needed.
+- If the server keeps files on its own disk, `url` is a path like `/uploads/9f2c.png`. Put the server's address in front of it (`http://localhost:3000/uploads/9f2c.png`).
+
+Both work the same way for the app: `if url starts with "http" use it as it is, otherwise put the base URL in front`.
 
 > **Heads-up:** that link is a public link. Nobody can *guess* it, but anyone who *has* it can open it. Don't promise users their files are private.
 

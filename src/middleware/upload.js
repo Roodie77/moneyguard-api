@@ -2,6 +2,7 @@ import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
+import { cloudEnabled } from '../services/storage.js';
 
 const UPLOAD_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../uploads');
 
@@ -17,10 +18,14 @@ const allowed = new Map([
   ['video/webm', '.webm'],
 ]);
 
-const storage = multer.diskStorage({
-  destination: UPLOAD_DIR,
-  filename: (req, file, cb) => cb(null, `${randomUUID()}${allowed.get(file.mimetype)}`),
-});
+// In the cloud the file is held in memory (at most 20 MB, see the limit below) and handed to Cloudinary by the route;
+// otherwise it is written straight to disk under a random name.
+const storage = cloudEnabled()
+  ? multer.memoryStorage()
+  : multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (req, file, cb) => cb(null, `${randomUUID()}${allowed.get(file.mimetype)}`),
+  });
 
 function fileFilter(req, file, cb) {
   if (allowed.has(file.mimetype)) {

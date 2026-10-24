@@ -1,5 +1,4 @@
 import express from 'express';
-import fs from 'fs/promises';
 import { query, withTransaction } from '../utils/db.js';
 import { asyncHandler as h } from '../utils/asyncHandler.js';
 import { authMiddleware } from '../middleware/auth.js';
@@ -7,6 +6,7 @@ import { validate, validateQuery } from '../middleware/validate.js';
 import { uuidParam } from '../middleware/uuidParam.js';
 import { writeLimiter, calcLimiter, readLimiter } from '../middleware/rateLimit.js';
 import { upload } from '../middleware/upload.js';
+import { storeUpload, discardUpload, withUrl } from '../services/storage.js';
 import * as schemas from '../validation/schemas.js';
 import {
   canIAfford,
@@ -190,22 +190,26 @@ router.delete('/expenses/:id', writeLimiter, h(async (req, res) => {
 
 router.post('/files', writeLimiter, upload.single('file'), h(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  const { filename, originalname, mimetype, size } = req.file;
+  const { originalname, mimetype, size } = req.file;
+  let stored;
   try {
+    stored = await storeUpload(req.file, req.userId); // a no-op on disk; an upload to Cloudinary in the cloud
     const [record] = await query(
-      'INSERT INTO files (user_id, filename, original_name, mimetype, size) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-      [req.userId, filename, originalname, mimetype, size],
+      `INSERT INTO files (user_id, filename, original_name, mimetype, size, url, public_id, resource_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [req.userId, stored.filename, originalname, mimetype, size, stored.url, stored.publicId, stored.resourceType],
     );
     logger.info(`File uploaded: ${record.id} by user ${req.userId}`); // not the client-chosen name: it may contain control characters
-    res.status(201).json(record);
+    res.status(201).json(withUrl(record));
   } catch (err) {
-    await fs.rm(req.file.path, { force: true }); // the file is already on disk; don't leave it without a record
+    await discardUpload(req.file, stored); // the file is already stored; don't leave it without a record
     throw err;
   }
 }));
 
 router.get('/files', readLimiter, h(async (req, res) => {
-  res.json(await query('SELECT * FROM files WHERE user_id = $1 ORDER BY created_at DESC', [req.userId]));
+  const files = await query('SELECT * FROM files WHERE user_id = $1 ORDER BY created_at DESC', [req.userId]);
+  res.json(files.map(withUrl));
 }));
 
 // ---- Dashboard and calculators ----

@@ -180,8 +180,10 @@ Deleting a user removes all of their rows.
 Index `expenses_user_date_idx (user_id, date DESC)`.
 
 **`files`**: `id`, `user_id`, `filename` (server-side name, a random UUID plus an extension chosen from the allowed type),
-`original_name`, `mimetype`, `size` integer, `created_at`. Index `files_user_idx (user_id)`. The bytes live on local disk
-in `src/uploads`, not in the database.
+`original_name`, `mimetype`, `size` integer, `created_at`, and (migration 004) `url`, `public_id`, `resource_type`. Index
+`files_user_idx (user_id)`. The bytes are never in the database: with `CLOUDINARY_URL` set they are on Cloudinary (`url` is the
+https link, `public_id` and `resource_type` identify the asset for deletion), otherwise on local disk in `src/uploads` (those
+three columns are empty and the link is `/uploads/<filename>`). `services/storage.js` hides the difference.
 
 **`affordability_checks`**: `id`, `user_id`, `amount` numeric(15,2), `recommendation` text, `created_at`.
 Index `affordability_checks_user_idx (user_id)`. Append-only history written by `/can-i-afford`; nothing reads it yet.
@@ -328,11 +330,13 @@ no floating-point drift.
 ### Known gaps (read before launch)
 
 1. **Reset emails and alert notifications are not sent** (see above and the alerts section). Alerts are pull-only for now.
-2. **CORS is open to every origin** (`cors()` with defaults). Restrict it to the real frontend origins. For a native mobile
-   app CORS does not protect anything, but it matters for any web client.
-3. **No security headers.** `helmet` is not installed. Behind a gateway that adds them this is fine; otherwise add it.
-4. **Uploads are public by URL** and stored on local disk, so they do not scale past one instance. Plan: object storage with
-   signed URLs.
+2. **CORS is a placeholder until `CORS_ORIGINS` is set.** Browsers may call the API only from the listed origins (default: a
+   placeholder that matches nothing real). Requests with no `Origin` header (mobile apps, Postman, curl) are unaffected. Set it to
+   the real frontend address before a web client launches.
+3. **Security headers come from Helmet 8** (global, in `app.js`), with `Cross-Origin-Resource-Policy: cross-origin` so other sites
+   can show uploaded files, and a separate, looser Content-Security-Policy on `/docs` only (Swagger UI loads from a CDN).
+4. **Uploads are public by link.** On Cloudinary the address is hard to guess but not private; on local disk they also do not
+   scale past one instance. Private files need Cloudinary authenticated delivery with signed links (not set up).
 5. **Access tokens cannot be revoked** individually; the exposure window is `ACCESS_TOKEN_SECONDS`. Logout ends the refresh
    token only.
 6. **HTTPS is not terminated by the app.** Put it behind a TLS-terminating proxy and set `TRUST_PROXY` correctly. Tokens
@@ -347,7 +351,7 @@ no floating-point drift.
 - [ ] `NODE_ENV=production` and a long random `JWT_SECRET`
 - [ ] `TRUST_PROXY` equals the number of proxies; HTTPS terminated in front
 - [ ] `REDIS_URL` set when running more than one instance (otherwise rate limits and idempotency are per-process)
-- [ ] CORS restricted; security headers added
+- [ ] `CORS_ORIGINS` set to the real frontend address (Helmet is already on)
 - [ ] Email provider wired into `mailer.js`
 - [ ] `npm run migrate` run for each release
-- [ ] Uploads directory on a persistent volume (or moved to object storage)
+- [ ] `CLOUDINARY_URL` set (or uploads directory on a persistent volume); migration 004 applied

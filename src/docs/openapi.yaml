@@ -491,7 +491,8 @@ paths:
       summary: Upload a file
       description: |
         Multipart form with one field named `file`. Allowed: JPEG, PNG, WebP, GIF, PDF, MP4, MOV, WebM. Max 20 MB.
-        The file is then available at `/uploads/{filename}`.
+        The answer has a `url` to open the file. With Cloudinary configured it is an `https://res.cloudinary.com/...` link;
+        otherwise it is a path on this server (`/uploads/{filename}`), so put the server's address in front of it.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -520,7 +521,7 @@ paths:
     get:
       tags: [Files]
       summary: Download an uploaded file
-      description: Public link, protected only by the unguessable filename. Do not treat it as private storage.
+      description: Only for files kept on this server's disk (when Cloudinary is not configured). Public link, protected only by the unguessable filename. Do not treat it as private storage.
       parameters:
         - { name: filename, in: path, required: true, schema: { type: string }, example: 3f2a9c1e-5b7d-4d3a-9d1e-0c2f6b8a7e41.png }
       responses:
@@ -1099,14 +1100,17 @@ components:
 
     FileRecord:
       type: object
-      required: [id, userId, filename, originalName, mimetype, size, createdAt]
+      required: [id, userId, filename, originalName, mimetype, size, url, createdAt]
       properties:
         id: { type: string, format: uuid }
         userId: { type: string, format: uuid }
-        filename: { type: string, description: 'Name on the server; use it in `/uploads/{filename}`.' }
+        filename: { type: string, description: 'The stored name (without a folder).' }
         originalName: { type: string }
         mimetype: { type: string }
         size: { type: integer, description: Bytes. }
+        url: { type: string, description: 'Where to open the file: a full https link when it is kept on Cloudinary, or a path such as `/uploads/9f2c.png` when it is kept on this server.' }
+        publicId: { type: string, nullable: true, description: 'Cloudinary id. Null for files kept on this server.' }
+        resourceType: { type: string, nullable: true, description: 'Cloudinary type (image or video). Null for files kept on this server.' }
         createdAt: { type: string, format: date-time }
 
     SafeToSpend:

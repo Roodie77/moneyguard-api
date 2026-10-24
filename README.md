@@ -28,15 +28,9 @@ Node 20+, Express, PostgreSQL, JWT auth. Optional Redis for rate limits shared a
 - **Analytics:** totals, average per day, spending per category and a per-day or per-month series for any range of up to 731 days.
 - **Alerts:** rules the user sets themselves (low balance, daily limit, monthly limit, category budget, bill due soon, over today's safe-to-spend). Alerts are listed, marked read, and kept for 90 days.
 - **Calculators:** "can I afford this?", projected balance after a new EMI, month-by-month cash flow, and loan affordability.
-- **Files:** upload and list receipts and documents (images, PDF, video up to 20 MB).
+- **Media uploads:** upload and list receipts, photos, PDFs and videos (up to 20 MB). They are kept on Cloudinary when `CLOUDINARY_URL` is set (so they survive redeploys), otherwise on the server's disk. Every file comes back with a `url` to open it.
 - **Safety and reliability:** input validation on every write, per-IP rate limits, idempotency keys for safe retries, request ids in every response and log line, and a `/health` check. See [How it behaves](#how-it-behaves).
-  
-- ## Security Headers
-
-- Integrated **Helmet 8.3.0** into the Express application to set HTTP security headers.
-- Applied Helmet middleware globally using `app.use(helmet())`.
-- Enabled default protections including Content Security Policy, HTTP Strict Transport Security, `X-Content-Type-Options`, `X-Frame-Options`, and Referrer Policy.
-- Verified the expected security headers using an isolated Express test. Full application verification remains pending.
+- **Security headers and CORS:** every response carries [Helmet](https://helmetjs.github.io/) 8's headers (Content-Security-Policy, Strict-Transport-Security, `X-Content-Type-Options`, `X-Frame-Options`, Referrer-Policy, and no `X-Powered-By`). Browsers may call the API only from the websites listed in `CORS_ORIGINS`. The `/docs` page has its own, looser policy so Swagger UI can load. Covered by `test/security-headers.test.js`.
 
 Every endpoint is listed in [API endpoints](#api-endpoints), with a request and response example for each.
 
@@ -80,6 +74,9 @@ Set in `.env` locally, as real environment variables in production.
 | `LOG_LEVEL` | no | Default `info` |
 | `AUTH_LIMIT_MAX` | no | Failed login/sign-up attempts allowed per 15 min per IP. Default `8`; only the test suite changes it. |
 | `CORS_ORIGINS` | no | Websites allowed to call the API from a browser, separated by commas. Defaults to the placeholder `https://frontend-placeholder.example.com` until the frontend is ready. |
+
+| `CLOUDINARY_URL` | no | Turns on Cloudinary storage for uploads: `cloudinary://API_KEY:API_SECRET@CLOUD_NAME`, copied from your Cloudinary dashboard. Keep it secret. Empty means files stay on the server's disk. |
+| `CLOUDINARY_FOLDER` | no | Top-level Cloudinary folder. Default `moneyguard`; each user's files go in `<folder>/<userId>`. |
 
 **Setting the frontend origin (CORS):** the API only accepts browser requests from the origins listed in `CORS_ORIGINS`. Until the frontend exists this is a placeholder, so every real website is blocked. To allow the real frontend, put its address in `CORS_ORIGINS` in your `.env` file when running locally, or in your host's environment variables in production (on Render, the service's *Environment* tab), then restart the server. Write the full address with `https://` and no trailing slash, and separate several addresses with commas. Mobile apps, Postman and curl are not affected by CORS.
 
@@ -1967,7 +1964,7 @@ test/                node:test suites + run.js (starts the test database); see T
 - **Alerts:** users set their own thresholds (`PUT /api/alert-rules`): low balance, daily limit, monthly limit, category budget, bill due soon, over today's safe-to-spend. There are no default rules. Rules are checked after every change that affects them and when the list is read; each fires once per day, month or bill. `GET /api/alerts` lists them (kept 90 days). **Nothing is pushed yet**: plug a sender into `src/services/notifier.js`.
 - **Idempotency:** send an `Idempotency-Key` header on POST/PUT/DELETE; a retry within 5 minutes returns the first result instead of repeating the action. Do not send it on login, register or refresh, because the cached answer would contain tokens.
 - **Rate limits (per IP):** 8 failed login, sign-up, refresh or reset attempts per 15 min, 8 password-reset requests per 15 min, 30 writes / 20 calculations / 60 reads per minute, 300 requests per 15 min overall. `/health` is exempt. A `429` response means wait and retry.
-- **Files:** JPEG, PNG, WebP, GIF, PDF, MP4, MOV and WebM up to 20 MB. The stored name is random and the extension comes from the file type, never from the client's file name.
+- **Files:** JPEG, PNG, WebP, GIF, PDF, MP4, MOV and WebM up to 20 MB. With `CLOUDINARY_URL` set they are uploaded to Cloudinary and returned as an `https://res.cloudinary.com/...` link; otherwise they are saved on disk under a random name (the extension comes from the file type, never from the client's file name) and returned as `/uploads/<name>`. If saving the database record fails after the upload, the uploaded copy is removed again.
 - **Safe to spend:** the daily figure is the balance minus upcoming bills and a savings reserve, divided by the days until the next income, and never below zero. A bill with no due date, or one already past due, is always counted, so delete bills once they are paid.
 - **Logging:** one line per request with the method, path, status, time, request id and client IP (`GET /api/bills 200 12ms 3f2a9c1e 203.0.113.9`); the id is also returned as `X-Request-Id`. Query strings, bodies, passwords and tokens are never logged. Behind a proxy (such as Render) set `TRUST_PROXY=1`, otherwise the IP logged is the proxy's, not the user's. IP addresses count as personal data in many countries, so keep the logs private and delete them on a schedule.
 - **Shutdown:** on SIGTERM the server stops accepting connections, finishes in-flight requests, then closes the database and Redis.
@@ -2016,6 +2013,7 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
 | `JWT_SECRET` | a long random value (see Configuration). The server refuses to start without it in production |
 | `TRUST_PROXY` | `1` (Render puts one proxy in front of the app) |
 | `CORS_ORIGINS` | the real frontend address, for example `https://app.example.com`. Until it is set, only a placeholder origin is allowed |
+| `CLOUDINARY_URL` | your Cloudinary URL, so uploaded files survive deploys (see Configuration) |
 | `DB_CONNECT_TIMEOUT_MS` | `20000` if the database is hosted far away or sleeps when idle |
 
 `PORT` is set by Render and read by the app.
@@ -2023,7 +2021,7 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
 **Migrations:** the start command above applies new migrations every time the service starts. That is safe to repeat, and instances starting together wait for each other. On a paid plan you can instead run `npm run migrate` as Render's *Pre-Deploy Command* and keep the start command as `npm start`.
 
 **Things to know on Render:**
-- The disk is wiped on every deploy and restart, so **uploaded files disappear** unless you attach a persistent disk mounted on the `src/uploads` folder (paid). See the limitations below.
+- The disk is wiped on every deploy and restart, so **uploaded files disappear** unless you set `CLOUDINARY_URL` (recommended: files are kept on Cloudinary) or attach a persistent disk mounted on the `src/uploads` folder (paid). See the limitations below.
 - Free web services go to sleep when idle, and the first request after that is slow.
 - Rate limits and idempotency are kept in memory, which is fine for one instance. Set `REDIS_URL` before running more than one.
 - Password-reset emails and alert notifications are not sent until a sender is plugged into `src/services/mailer.js` and `src/services/notifier.js`.
@@ -2035,19 +2033,17 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
 - [ ] `DATABASE_URL` points at the production database; `npm run migrate` ran
 - [ ] `TRUST_PROXY` matches the number of proxies in front of the app
 - [ ] `REDIS_URL` set if running more than one instance
-- [ ] Uploads directory is on a persistent volume (see limitations)
+- [ ] `CLOUDINARY_URL` is set (or the uploads directory is on a persistent volume), and `npm run migrate` has applied migration 004
 - [ ] A real email sender is plugged into `src/services/mailer.js`, and a push/email sender into `src/services/notifier.js` if you want alerts delivered
 - [ ] Load balancer health check hits `/health` (200 = ok, 503 = database down)
 - [ ] HTTPS terminated in front of the app
 
 ## Known limitations
 
-- **Uploads are stored on local disk** (`src/uploads`) and served publicly at `/uploads/<random-name>`. This does not
-  scale past one instance and the links are unguessable, not private. Moving to object storage (S3, R2) with signed
-  URLs is the planned fix.
+- **Uploaded files are reachable by anyone who has the link.** Without `CLOUDINARY_URL` they sit on the server's disk (`src/uploads`, served at `/uploads/<random-name>`), which does not scale past one instance. With it they are on Cloudinary at a hard-to-guess address. Both are "unguessable, not private". Truly private files need Cloudinary's authenticated delivery with signed links, which is not set up yet. Also: Cloudinary may block delivery of PDF and ZIP files until you allow it in its security settings.
 - **CORS allows only a placeholder origin for now.** Browsers can call the API only from the origins in `CORS_ORIGINS`. Set the real frontend address there before launch.
 - **Password-reset emails need a provider.** The reset flow works end to end, but `src/services/mailer.js` only logs the token (outside production) until you connect an email service.
 - **No notifications are delivered.** Alerts appear when the app asks for them (`GET /api/alerts` or the dashboard's `unreadAlerts`). Push or email needs a sender in `src/services/notifier.js`.
 - **The profile is minimal.** There are no endpoints yet to change the email or phone, change the password while signed in, or delete the account. Only expenses are recorded as transactions, not income.
-- **No security headers.** `helmet` is not installed, and HTTPS must be terminated by the platform or a proxy in front of the app.
+- **HTTPS is not done by the app.** Render (or your proxy) must terminate it. Helmet sends the HTTPS-only header, but the app itself speaks plain HTTP.
 - **Access tokens last 1 hour** and cannot be revoked individually: logout ends the refresh token, and a password reset invalidates earlier access tokens, but a stolen access token otherwise works until it expires.

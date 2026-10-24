@@ -39,9 +39,12 @@ test('an allowed file is stored and listed; the server path is not exposed', asy
   assert.equal(res.body.size, 13);
   assert.ok(res.body.filename.endsWith('.pdf'));
   assert.equal('path' in res.body, false);
+  assert.equal(res.body.url, `/uploads/${res.body.filename}`); // kept on this server: the link is a path on it
+  assert.equal(res.body.publicId, null);
 
   const list = await app.api('GET', '/api/files', { token: user.token });
   assert.equal(list.body.length, 1);
+  assert.equal(list.body[0].url, res.body.url);
 });
 
 test('the stored extension comes from the file type, never the client filename ("evil.html" cannot stay .html)', async () => {
