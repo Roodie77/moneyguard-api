@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import authRoutes from './routes/auth.js';
@@ -24,6 +25,11 @@ if (process.env.TRUST_PROXY) {
   app.set('trust proxy', proxies);
 }
 
+// Security headers on every response (Helmet's defaults: Content-Security-Policy, Strict-Transport-Security,
+// X-Content-Type-Options, X-Frame-Options, Referrer-Policy, and no X-Powered-By). One change: uploaded files may be
+// shown by a frontend on another website, so other origins are allowed to embed them.
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
 // Before the limiters, so load-balancer probes are never rate limited.
 app.get('/health', async (req, res) => {
   const database = await pingDb();
@@ -38,7 +44,14 @@ app.use(requestLogger); // after /health so probes don't flood the logs
 
 // API documentation for the frontend team: Swagger UI at /docs, reading the spec below.
 app.get('/openapi.yaml', (req, res) => res.sendFile(path.join(__dirname, 'docs/openapi.yaml')));
-app.get('/docs', (req, res) => res.type('html').send(`<!doctype html>
+
+// Helmet's strict default policy would block the Swagger UI page, which loads its script and styles from a CDN and starts
+// with a small inline script. This page (and only this page) gets a policy that allows exactly that.
+const DOCS_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+  + "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; "
+  + "font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self'";
+
+app.get('/docs', (req, res) => res.set('Content-Security-Policy', DOCS_CSP).type('html').send(`<!doctype html>
 <html><head><meta charset="utf-8"><title>MoneyGuard API</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.34.0/swagger-ui.css"></head>
 <body><div id="ui"></div>
