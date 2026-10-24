@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import authRoutes from './routes/auth.js';
 import apiRoutes from './routes/api.js';
+import helmet from 'helmet';
 import { globalLimiter } from './middleware/rateLimit.js';
 import { idempotency } from './middleware/idempotency.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -15,6 +16,8 @@ import logger from './utils/logger.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const app = express();
+
+app.use(helmet());
 
 // Number of reverse proxies in front of the app (e.g. 1 behind a load balancer),
 // so req.ip is the real client and not the proxy shared by every user.
