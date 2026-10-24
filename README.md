@@ -2,6 +2,8 @@
 
 **Author:** Jonathan Adewale
 
+**Co-author:** Jonluis Paa Kojo Classpeter
+
 REST API for MoneyGuard: track balance, bills and expenses, get a daily "safe to spend" figure, see where the money goes (analytics),
 set your own spending and balance alerts, and run affordability calculators (projected balance after a new EMI, loan affordability, cash-flow projection).
 
@@ -68,6 +70,9 @@ Set in `.env` locally, as real environment variables in production.
 | `REFRESH_TOKEN_DAYS` | no | Refresh token lifetime, renewed on every refresh. Default `7`. |
 | `LOG_LEVEL` | no | Default `info` |
 | `AUTH_LIMIT_MAX` | no | Failed login/sign-up attempts allowed per 15 min per IP. Default `8`; only the test suite changes it. |
+| `CORS_ORIGINS` | no | Websites allowed to call the API from a browser, separated by commas. Defaults to the placeholder `https://frontend-placeholder.example.com` until the frontend is ready. |
+
+**Setting the frontend origin (CORS):** the API only accepts browser requests from the origins listed in `CORS_ORIGINS`. Until the frontend exists this is a placeholder, so every real website is blocked. To allow the real frontend, put its address in `CORS_ORIGINS` in your `.env` file when running locally, or in your host's environment variables in production (on Render, the service's *Environment* tab), then restart the server. Write the full address with `https://` and no trailing slash, and separate several addresses with commas. Mobile apps, Postman and curl are not affected by CORS.
 
 ## API endpoints
 
@@ -2001,6 +2006,7 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
 | `DATABASE_URL` | your Neon / Supabase / Render Postgres connection string |
 | `JWT_SECRET` | a long random value (see Configuration). The server refuses to start without it in production |
 | `TRUST_PROXY` | `1` (Render puts one proxy in front of the app) |
+| `CORS_ORIGINS` | the real frontend address, for example `https://app.example.com`. Until it is set, only a placeholder origin is allowed |
 | `DB_CONNECT_TIMEOUT_MS` | `20000` if the database is hosted far away or sleeps when idle |
 
 `PORT` is set by Render and read by the app.
@@ -2030,7 +2036,7 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
 - **Uploads are stored on local disk** (`src/uploads`) and served publicly at `/uploads/<random-name>`. This does not
   scale past one instance and the links are unguessable, not private. Moving to object storage (S3, R2) with signed
   URLs is the planned fix.
-- **CORS is open to every origin.** Restrict it to the real frontend origins before launch.
+- **CORS allows only a placeholder origin for now.** Browsers can call the API only from the origins in `CORS_ORIGINS`. Set the real frontend address there before launch.
 - **Password-reset emails need a provider.** The reset flow works end to end, but `src/services/mailer.js` only logs the token (outside production) until you connect an email service.
 - **No notifications are delivered.** Alerts appear when the app asks for them (`GET /api/alerts` or the dashboard's `unreadAlerts`). Push or email needs a sender in `src/services/notifier.js`.
 - **The profile is minimal.** There are no endpoints yet to change the email or phone, change the password while signed in, or delete the account. Only expenses are recorded as transactions, not income.
