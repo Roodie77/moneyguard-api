@@ -68,7 +68,7 @@ function corsOrigin(origin, callback) {
 
   const configured = (process.env.CORS_ORIGINS || '')
     .split(',')
-    .map((s) => s.trim())
+    .map((s) => s.trim().replace(/\/+$/, '')) // browsers send an origin without a trailing slash, so ignore one in the setting
     .filter(Boolean);
 
   const allowed = configured.length > 0 ? configured : [PLACEHOLDER_ORIGIN];

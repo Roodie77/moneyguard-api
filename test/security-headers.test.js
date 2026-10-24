@@ -62,6 +62,18 @@ test('CORS: CORS_ORIGINS replaces the placeholder; several origins, spaces and a
   }
 });
 
+test('CORS: a trailing slash in CORS_ORIGINS (a pasted address) still matches the browser origin, which has none', async () => {
+  process.env.CORS_ORIGINS = 'https://money-guard-xi.vercel.app/';
+  try {
+    const ok = await get('/api/me', { origin: 'https://money-guard-xi.vercel.app' });
+    assert.equal(ok.headers.get('access-control-allow-origin'), 'https://money-guard-xi.vercel.app');
+    const other = await get('/api/me', { origin: 'https://money-guard-xi.vercel.app.evil.org' });
+    assert.equal(other.headers.get('access-control-allow-origin'), null);
+  } finally {
+    delete process.env.CORS_ORIGINS;
+  }
+});
+
 test('CORS: a preflight from an allowed website is answered and cached for 10 minutes; from another website it is not allowed', async () => {
   process.env.CORS_ORIGINS = 'https://app.example.com';
   try {
