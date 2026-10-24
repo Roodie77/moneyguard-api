@@ -71,6 +71,45 @@ router.put('/savings-goal', writeLimiter, validate(schemas.savingsGoal), h(async
   res.json(row);
 }));
 
+// ---- Financial profile: the numbers typed into the calculators, remembered between logins ----
+
+const PROFILE_DEFAULTS = {
+  monthlyIncome: 0, monthlyExpenses: 0, existingDebtPayments: 0, proposedPayment: 0,
+  targetDtiRatio: 0.4, annualInterestRate: 0, loanTermMonths: 12, updatedAt: null,
+};
+const PROFILE_COLUMNS = `monthly_income, monthly_expenses, existing_debt_payments, proposed_payment,
+  target_dti_ratio, annual_interest_rate, loan_term_months, updated_at`;
+
+// Nothing saved yet is not an error: the defaults come back (updatedAt is null), so the app can always pre-fill its form.
+router.get('/financial-profile', readLimiter, h(async (req, res) => {
+  const [row] = await query(`SELECT ${PROFILE_COLUMNS} FROM financial_profiles WHERE user_id = $1`, [req.userId]);
+  res.json(row ?? PROFILE_DEFAULTS);
+}));
+
+// Saves only the fields that were sent; the others keep their saved value (or their default the first time).
+router.put('/financial-profile', writeLimiter, validate(schemas.financialProfile), h(async (req, res) => {
+  const b = req.body;
+  const [row] = await query(
+    `INSERT INTO financial_profiles (user_id, monthly_income, monthly_expenses, existing_debt_payments, proposed_payment,
+                                     target_dti_ratio, annual_interest_rate, loan_term_months)
+     VALUES ($1, COALESCE($2::numeric, 0), COALESCE($3::numeric, 0), COALESCE($4::numeric, 0), COALESCE($5::numeric, 0),
+             COALESCE($6::numeric, 0.4), COALESCE($7::numeric, 0), COALESCE($8::int, 12))
+     ON CONFLICT (user_id) DO UPDATE SET
+       monthly_income         = COALESCE($2::numeric, financial_profiles.monthly_income),
+       monthly_expenses       = COALESCE($3::numeric, financial_profiles.monthly_expenses),
+       existing_debt_payments = COALESCE($4::numeric, financial_profiles.existing_debt_payments),
+       proposed_payment       = COALESCE($5::numeric, financial_profiles.proposed_payment),
+       target_dti_ratio       = COALESCE($6::numeric, financial_profiles.target_dti_ratio),
+       annual_interest_rate   = COALESCE($7::numeric, financial_profiles.annual_interest_rate),
+       loan_term_months       = COALESCE($8::int, financial_profiles.loan_term_months),
+       updated_at = now()
+     RETURNING ${PROFILE_COLUMNS}`,
+    [req.userId, b.monthlyIncome ?? null, b.monthlyExpenses ?? null, b.existingDebtPayments ?? null, b.proposedPayment ?? null,
+      b.targetDtiRatio ?? null, b.annualInterestRate ?? null, b.loanTermMonths ?? null],
+  );
+  res.json(row);
+}));
+
 // ---- Bills ----
 
 router.get('/bills', readLimiter, h(async (req, res) => {

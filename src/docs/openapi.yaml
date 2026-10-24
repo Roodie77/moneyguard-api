@@ -188,6 +188,56 @@ paths:
                   - { $ref: '#/components/schemas/Error' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/financial-profile:
+    get:
+      tags: [Profile]
+      summary: Get the saved calculator numbers
+      description: |
+        The numbers the user typed into the calculators (monthly income, expenses, loan payments and so on), remembered
+        between logins. Call this after login to pre-fill the calculator screens. If nothing has been saved yet the
+        defaults come back (not an error) and `updatedAt` is null.
+
+        How the fields map onto the calculators:
+
+        | Field | projected-balance | cash-flow | affordability |
+        |---|---|---|---|
+        | `monthlyIncome` | `monthlyIncome` | `monthlyGrossIncome` | `monthlyGrossIncome` |
+        | `monthlyExpenses` | `ordinaryExpenses` | `otherMonthlyExpenses` | `otherMonthlyExpenses` |
+        | `existingDebtPayments` | `existingEMI` | `existingMonthlyDebtPayments` | `existingMonthlyDebtPayments` |
+        | `proposedPayment` | `proposedEMI` | `monthlyPayment` | `proposedMonthlyPayment` |
+        | `targetDtiRatio` | | | `targetDtiRatio` |
+        | `annualInterestRate` | | | `annualInterestRate` |
+        | `loanTermMonths` | | | `loanTermMonths` |
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The saved numbers, or the defaults
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinancialProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    put:
+      tags: [Profile]
+      summary: Save the calculator numbers
+      description: Send only the fields that changed (at least one). Fields you leave out keep their saved value.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FinancialProfileInput' }
+      responses:
+        '200':
+          description: The numbers as saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FinancialProfile' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/me:
     get:
       tags: [Profile]
@@ -923,6 +973,30 @@ components:
         savingsGoalAmount: { type: number }
         savingsGoalDeadline: { type: string, format: date-time, nullable: true }
         createdAt: { type: string, format: date-time }
+    FinancialProfileInput:
+      type: object
+      minProperties: 1
+      description: Any of these fields; at least one.
+      properties:
+        monthlyIncome: { $ref: '#/components/schemas/Money' }
+        monthlyExpenses: { $ref: '#/components/schemas/Money' }
+        existingDebtPayments: { $ref: '#/components/schemas/Money' }
+        proposedPayment: { $ref: '#/components/schemas/Money' }
+        targetDtiRatio: { type: number, minimum: 0, maximum: 1, example: 0.4, description: Share of income you are willing to give to debt. }
+        annualInterestRate: { type: number, minimum: 0, maximum: 1, example: 0.12, description: 'A fraction, not a percentage: 0.12 means 12%.' }
+        loanTermMonths: { type: integer, minimum: 1, maximum: 480, example: 24 }
+    FinancialProfile:
+      type: object
+      required: [monthlyIncome, monthlyExpenses, existingDebtPayments, proposedPayment, targetDtiRatio, annualInterestRate, loanTermMonths, updatedAt]
+      properties:
+        monthlyIncome: { type: number, example: 400000 }
+        monthlyExpenses: { type: number, example: 150000 }
+        existingDebtPayments: { type: number, example: 30000 }
+        proposedPayment: { type: number, example: 50000 }
+        targetDtiRatio: { type: number, example: 0.4 }
+        annualInterestRate: { type: number, example: 0.18 }
+        loanTermMonths: { type: integer, example: 24 }
+        updatedAt: { type: string, format: date-time, nullable: true, description: 'When it was last saved. Null if the user never saved anything.' }
     AuthResponse:
       type: object
       required: [token, expiresIn, refreshToken, user]

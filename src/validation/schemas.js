@@ -68,6 +68,19 @@ export const savingsGoal = Joi.object({
   deadline: date.allow(null),
 });
 
+// What the calculators ask for, saved so the app can fill it in again. Every field is optional (send only what changed),
+// but at least one must be sent.
+export const financialProfile = Joi.object({
+  monthlyIncome: money,
+  monthlyExpenses: money,
+  existingDebtPayments: money,
+  proposedPayment: money,
+  targetDtiRatio: Joi.number().precision(4).min(0).max(1),
+  annualInterestRate: Joi.number().precision(6).min(0).max(1)
+    .messages({ 'number.max': 'annualInterestRate is a fraction, e.g. 0.12 for 12%' }),
+  loanTermMonths: Joi.number().integer().min(1).max(480),
+}).min(1);
+
 export const bill = Joi.object({
   name: text(100).min(1).required(),
   amount: positiveMoney.required(),

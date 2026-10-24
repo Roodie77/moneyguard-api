@@ -298,6 +298,39 @@ This **replaces** the number. It does not add to it. Use it when the user says "
 
 `deadline` is optional. Answer: `{ "savingsGoalAmount": 200, "savingsGoalDeadline": "..." }`.
 
+### Remember my calculator numbers `GET` and `PUT /api/financial-profile`
+
+The three "what if" calculators (section 8) only do maths on the numbers you send them. They **do not remember** those numbers. So if your app asks the user for "monthly income, expenses, loan payment" and keeps the answers only in the phone's memory, the user has to type them all again after logging out.
+
+This endpoint is the server's notebook for those numbers.
+
+**Right after login:** `GET /api/financial-profile` and use the answer to fill in the calculator screen. If nothing was ever saved you still get an answer (the defaults, with `"updatedAt": null`), never an error.
+
+**When the user fills in or changes a number:** `PUT /api/financial-profile` with only what changed:
+
+```json
+{ "monthlyIncome": 400000, "monthlyExpenses": 150000, "existingDebtPayments": 30000, "proposedPayment": 50000,
+  "targetDtiRatio": 0.4, "annualInterestRate": 0.18, "loanTermMonths": 24 }
+```
+
+All seven fields are optional, but send at least one. The answer is everything as saved, plus `updatedAt`. `annualInterestRate` is a fraction (`0.18` = 18%), like in the calculators.
+
+**Which calculator field is which:**
+
+| Saved field | projected-balance | cash-flow | affordability |
+|---|---|---|---|
+| `monthlyIncome` | `monthlyIncome` | `monthlyGrossIncome` | `monthlyGrossIncome` |
+| `monthlyExpenses` | `ordinaryExpenses` | `otherMonthlyExpenses` | `otherMonthlyExpenses` |
+| `existingDebtPayments` | `existingEMI` | `existingMonthlyDebtPayments` | `existingMonthlyDebtPayments` |
+| `proposedPayment` | `proposedEMI` | `monthlyPayment` | `proposedMonthlyPayment` |
+| `targetDtiRatio` | | | `targetDtiRatio` |
+| `annualInterestRate` | | | `annualInterestRate` |
+| `loanTermMonths` | | | `loanTermMonths` |
+
+For `cash-flow`, take `startingCashBalance` from the user's `balance` (`GET /api/me`).
+
+**Good to know:** logging out never deletes anything the user saved. If an app shows an empty screen after login, the app is not loading the data. It is still on the server.
+
 ---
 
 ## 6. Bills (things to pay later)

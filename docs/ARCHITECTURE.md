@@ -45,6 +45,7 @@ Order matters: the idempotency middleware runs before auth, which is why its cac
 | Profile | `PUT /api/balance` | yes | write | replaces the balance |
 | Profile | `PUT /api/next-income` | yes | write | |
 | Profile | `PUT /api/savings-goal` | yes | write | |
+| Profile | `GET`, `PUT /api/financial-profile` | yes | read / write | the numbers typed into the calculators, saved per user (partial saves; defaults when nothing is saved) |
 | Bills | `GET/POST /api/bills`, `DELETE /api/bills/:id` | yes | read / write | |
 | Expenses | `GET /api/expenses` | yes | read | filters (`from`, `to`, `category`, `minAmount`, `maxAmount`), `limit`/`offset`, `X-Total-Count` |
 | Expenses | `POST /api/expenses` | yes | write | atomic; refuses overspend (422) |
@@ -147,6 +148,7 @@ users 1 ──< bills
       1 ──< affordability_checks
       1 ──< refresh_tokens
       1 ──< alert_rules ──< alerts   (alerts also hang off users; rule_id becomes NULL if the rule is deleted)
+      1 ──1 financial_profiles       (at most one row per user, created on the first save)
       1 ──< password_reset_tokens
 
 (every child row: user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE)
@@ -216,6 +218,12 @@ the message), `period_key`, `created_at`, `read_at`. `UNIQUE (rule_id, period_ke
 (see the alerts section below). Indexes: `(user_id, created_at DESC)` and a partial index on unread rows.
 
 `expenses` also gets `expenses_user_category_idx (user_id, lower(category), date DESC)` for category filters and grouping.
+
+**`financial_profiles`** (005): `user_id` (primary key and FK, cascade), `monthly_income`, `monthly_expenses`,
+`existing_debt_payments`, `proposed_payment` (all numeric(15,2), `CHECK (>= 0)`), `target_dti_ratio` numeric(5,4) (0 to 1, default
+0.4), `annual_interest_rate` numeric(7,6) (0 to 1, a fraction), `loan_term_months` (1 to 480, default 12), `updated_at`. The
+calculators are stateless: they only compute from what a request sends. This table is what lets the app remember those inputs
+between logins. `GET` returns defaults when there is no row; `PUT` is an upsert that changes only the fields sent.
 
 ### Housekeeping
 

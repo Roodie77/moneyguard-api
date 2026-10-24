@@ -29,6 +29,15 @@ function assertContract(res, specPath, method) {
   assert.ok(validate(res.body), `${method.toUpperCase()} ${specPath} ${res.status} body does not match the spec:\n${ajv.errorsText(validate.errors)}\n${JSON.stringify(res.body)}`);
 }
 
+test('contract: financial profile', async () => {
+  const fresh = await registerUser(app.api);
+  const call = (method, p, body) => app.api(method, p, { token: fresh.token, body });
+  assertContract(await call('GET', '/api/financial-profile'), '/api/financial-profile', 'get'); // defaults, updatedAt null
+  assertContract(await call('PUT', '/api/financial-profile', { monthlyIncome: 450000, annualInterestRate: 0.18 }), '/api/financial-profile', 'put');
+  assertContract(await call('GET', '/api/financial-profile'), '/api/financial-profile', 'get'); // saved
+  assertContract(await call('PUT', '/api/financial-profile', {}), '/api/financial-profile', 'put'); // 400
+});
+
 test('contract: expense edit/delete, analytics and alerts', async () => {
   const fresh = await registerUser(app.api);
   const call = (method, p, body) => app.api(method, p, { token: fresh.token, body });
