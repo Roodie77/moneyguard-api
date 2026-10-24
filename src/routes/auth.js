@@ -100,7 +100,7 @@ router.post('/reset-password', authLimiter, validate(schemas.resetPassword), h(a
 }));
 
 function sanitize(user) {
-  const { passwordHash, passwordChangedAt, ...rest } = user;
+  const { passwordHash, passwordChangedAt, avatarPublicId, ...rest } = user;
   return rest;
 }
 

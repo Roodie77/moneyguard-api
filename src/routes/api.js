@@ -5,8 +5,8 @@ import { authMiddleware } from '../middleware/auth.js';
 import { validate, validateQuery } from '../middleware/validate.js';
 import { uuidParam } from '../middleware/uuidParam.js';
 import { writeLimiter, calcLimiter, readLimiter } from '../middleware/rateLimit.js';
-import { upload } from '../middleware/upload.js';
-import { storeUpload, discardUpload, withUrl } from '../services/storage.js';
+import { upload, uploadAvatar } from '../middleware/upload.js';
+import { storeUpload, discardUpload, removeStored, withUrl } from '../services/storage.js';
 import * as schemas from '../validation/schemas.js';
 import {
   canIAfford,
@@ -43,9 +43,35 @@ const checkAlerts = (req) => evaluateAlerts(req.userId);
 // ---- Profile ----
 
 router.get('/me', readLimiter, (req, res) => {
-  const { passwordHash, passwordChangedAt, ...safe } = req.user;
+  const { passwordHash, passwordChangedAt, avatarPublicId, ...safe } = req.user;
   res.json(safe);
 });
+
+// Sets or replaces the profile picture (an image in the form field "avatar", at most 5 MB). The old picture is deleted
+// once the new one is saved, so a user never has more than one stored.
+router.put('/me/avatar', writeLimiter, uploadAvatar, h(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No image uploaded' });
+  let stored;
+  try {
+    stored = await storeUpload(req.file, req.userId, 'avatar');
+    const [row] = await query(
+      'UPDATE users SET avatar_url = $1, avatar_public_id = $2 WHERE id = $3 RETURNING avatar_url',
+      [stored.url ?? `/uploads/${stored.filename}`, stored.publicId, req.userId],
+    );
+    await removeStored({ url: req.user.avatarUrl, publicId: req.user.avatarPublicId });
+    res.json({ avatarUrl: row.avatarUrl });
+  } catch (err) {
+    await discardUpload(req.file, stored); // the new picture is already stored; don't leave it without a record
+    throw err;
+  }
+}));
+
+// Removes the profile picture. Safe to repeat.
+router.delete('/me/avatar', writeLimiter, h(async (req, res) => {
+  await query('UPDATE users SET avatar_url = NULL, avatar_public_id = NULL WHERE id = $1', [req.userId]);
+  await removeStored({ url: req.user.avatarUrl, publicId: req.user.avatarPublicId });
+  res.json({ avatarUrl: null });
+}));
 
 router.put('/balance', writeLimiter, validate(schemas.balance), h(async (req, res) => {
   const [row] = await query('UPDATE users SET balance = $1 WHERE id = $2 RETURNING balance', [req.body.balance, req.userId]);

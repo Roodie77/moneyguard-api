@@ -188,6 +188,61 @@ paths:
                   - { $ref: '#/components/schemas/Error' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/me/avatar:
+    put:
+      tags: [Profile]
+      summary: Set or replace my profile picture
+      description: |
+        Multipart form with one field named `avatar`: an image (JPEG, PNG, WebP or GIF), at most 5 MB. The answer has the
+        link to show. With Cloudinary configured it is an `https://res.cloudinary.com/...` link; otherwise it is a path on this
+        server (`/uploads/...`), so put the server's address in front of it. The previous picture is deleted. The link is also
+        `avatarUrl` on `GET /api/me` and in the login and register answers.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [avatar]
+              properties:
+                avatar: { type: string, format: binary }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [avatarUrl]
+                properties:
+                  avatarUrl: { type: string, example: 'https://res.cloudinary.com/your-cloud/image/upload/v1/moneyguard/USER_ID/avatar/abc123.png' }
+        '400':
+          description: No image sent, the wrong form field, not an image, or larger than 5 MB
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+    delete:
+      tags: [Profile]
+      summary: Remove my profile picture
+      description: Deletes the stored picture and clears `avatarUrl`. Safe to repeat.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: Removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [avatarUrl]
+                properties:
+                  avatarUrl: { type: string, nullable: true, example: null }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/financial-profile:
     get:
       tags: [Profile]
@@ -962,11 +1017,12 @@ components:
 
     User:
       type: object
-      required: [id, email, phone, balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline, createdAt]
+      required: [id, email, phone, avatarUrl, balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline, createdAt]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
         phone: { type: string, nullable: true }
+        avatarUrl: { type: string, nullable: true, description: 'The profile picture to show: a full https link, or a path such as `/uploads/abc.png` that needs the server address in front. Null if none.' }
         balance: { type: number }
         nextIncomeAmount: { type: number }
         nextIncomeDate: { type: string, format: date-time, nullable: true }

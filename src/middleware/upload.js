@@ -35,6 +35,22 @@ function fileFilter(req, file, cb) {
   }
 }
 
+// Profile pictures: images only, at most 5 MB, in the form field "avatar".
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const avatarUpload = multer({
+  storage,
+  fileFilter: (req, file, cb) => (IMAGE_TYPES.has(file.mimetype)
+    ? cb(null, true)
+    : cb(new Error('Invalid file type. Allowed: JPEG, PNG, WebP, GIF'), false)),
+  defParamCharset: 'utf8',
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+export const uploadAvatar = (req, res, next) => avatarUpload.single('avatar')(req, res, (err) => {
+  if (err?.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: 'Image too large. Max 5MB.' });
+  return next(err);
+});
+
 export const upload = multer({
   storage,
   fileFilter,

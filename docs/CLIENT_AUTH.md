@@ -60,3 +60,47 @@ Each refresh token works **once**. The server replaces it with a new one, and re
 
 `POST /api/auth/forgot-password`, then `POST /api/auth/reset-password`. A successful reset signs the account out everywhere, so
 after it the app must clear its stored tokens and go to the full login screen. Any local PIN stays valid (it is not the account password).
+
+## Web apps: staying signed in when the page is refreshed
+
+**Symptom:** the user presses F5 (or reloads the tab) and lands on the login page instead of their dashboard.
+
+**Cause:** the app kept the tokens only in memory (a variable or component state). A page reload wipes all memory, so the app thinks nobody is signed in. The server did nothing wrong: logging in again shows all the data, because it is stored on the server.
+
+**Fix:** keep the **refresh token** somewhere that survives a reload, and use it when the app starts.
+
+1. After login, register or refresh, save the **new** `refreshToken` in `localStorage` (or `sessionStorage` if it should end when the tab closes). Keep the access token in memory.
+2. When the app starts, **before** showing any page: if there is a refresh token in storage, call `POST /api/auth/refresh`, save the new pair, then load the dashboard. While that runs, show a loading screen, **not** the login page.
+3. Only a `401` from `/api/auth/refresh` means "log in again": delete the stored token and show the login page. A network error, `429` or `503` must keep the token and show "try again".
+
+```js
+let inFlight = null; // one refresh at a time, shared by everyone who asks
+
+export function restoreSession() {
+  inFlight ??= (async () => {
+    const refreshToken = localStorage.getItem('refreshToken');
+    if (!refreshToken) throw new Error('signed-out');
+    const res = await fetch(`${API_URL}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (res.status === 401) { localStorage.removeItem('refreshToken'); throw new Error('signed-out'); }
+    if (!res.ok) throw new Error('try-again'); // keep the token
+    const data = await res.json();
+    localStorage.setItem('refreshToken', data.refreshToken); // save the NEW one first
+    accessToken = data.token;
+    return data;
+  })().finally(() => { inFlight = null; });
+  return inFlight;
+}
+```
+
+**The trap that logs people out even when this is done:** each refresh token works **once**. If the same token is sent twice, the second call gets `401` and the server cancels the whole login (that is its theft protection). Two things cause a double send:
+
+- **React 18 StrictMode** runs effects twice in development, so the start-up refresh fires twice. The shared `inFlight` promise above prevents it. (Do not "fix" it by turning StrictMode off.)
+- **Several requests failing with 401 at the same moment** (for example when the access token expires). They must all wait for **one** refresh, not each start their own. The same `inFlight` promise handles it.
+
+Two browser tabs refreshing at the same moment can also collide. If that matters, use `navigator.locks.request('refresh', ...)` around the refresh call.
+
+**Trade-off to know:** anything in `localStorage` can be read by a script injected into the page (XSS), so keep the app free of untrusted HTML. A mobile app should use the Keychain or Keystore instead, as described above.

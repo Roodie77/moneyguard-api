@@ -64,6 +64,18 @@ No wristband, or a broken one → the server says **401**. Section 3 explains ho
 - Pretend dates (`2026-02-30`) are rejected. Allowed years: 1900 to 2200.
 - Dates you get back always look like `2026-12-01T00:00:00.000Z`.
 
+**What a date picker gives you (the usual reason a date is refused with a 400):**
+
+| What the app sends | Accepted? | What to do |
+|---|---|---|
+| `2026-12-01` (what `<input type="date">` gives) | **Yes** | Send it as it is |
+| `2026-12-01T09:00:00Z` or `2026-12-01T09:00:00+01:00` | **Yes** | |
+| `2026-12-01T09:00` (what `<input type="datetime-local">` gives: **no time zone**) | **No** | Convert first: `new Date(value).toISOString()` |
+| `01/12/2026` or `1-12-2026` (day first) | **No** | Rearrange to `YYYY-MM-DD` |
+| `2026-02-30` (a day that does not exist) | **No** | |
+
+The 400 answer names the field and says what it expected, so show that message to the user.
+
 ### When something goes wrong
 
 Every error looks like this:
@@ -297,6 +309,20 @@ This **replaces** the number. It does not add to it. Use it when the user says "
 ```
 
 `deadline` is optional. Answer: `{ "savingsGoalAmount": 200, "savingsGoalDeadline": "..." }`.
+
+### Profile picture `PUT /api/me/avatar` and `DELETE /api/me/avatar`
+
+Upload with a **form** (not JSON): one field named **`avatar`** (not `file`), an image (JPEG, PNG, WebP or GIF), **at most 5 MB**.
+
+```
+curl -X PUT -H "Authorization: Bearer <token>" -F "avatar=@me.png" https://moneyguard-api.onrender.com/api/me/avatar
+```
+
+Answer: `{ "avatarUrl": "https://res.cloudinary.com/..." }`. Show that link in an image view. It is also `avatarUrl` on `GET /api/me` and in the login and register answers (`null` when there is no picture). If the link starts with `/uploads/` (the server keeps files on its own disk), put the server's address in front of it.
+
+- A new upload **replaces** the old picture (the old one is deleted).
+- `DELETE /api/me/avatar` removes it and answers `{ "avatarUrl": null }`.
+- **400** means: no image sent, the form field is not named `avatar`, it is not an image, or it is bigger than 5 MB. The message says which.
 
 ### Remember my calculator numbers `GET` and `PUT /api/financial-profile`
 

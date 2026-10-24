@@ -45,6 +45,7 @@ Order matters: the idempotency middleware runs before auth, which is why its cac
 | Profile | `PUT /api/balance` | yes | write | replaces the balance |
 | Profile | `PUT /api/next-income` | yes | write | |
 | Profile | `PUT /api/savings-goal` | yes | write | |
+| Profile | `PUT`, `DELETE /api/me/avatar` | yes | write | profile picture (image, max 5 MB) kept on Cloudinary or on disk; the old one is deleted |
 | Profile | `GET`, `PUT /api/financial-profile` | yes | read / write | the numbers typed into the calculators, saved per user (partial saves; defaults when nothing is saved) |
 | Bills | `GET/POST /api/bills`, `DELETE /api/bills/:id` | yes | read / write | |
 | Expenses | `GET /api/expenses` | yes | read | filters (`from`, `to`, `category`, `minAmount`, `maxAmount`), `limit`/`offset`, `X-Total-Count` |
@@ -173,6 +174,8 @@ Deleting a user removes all of their rows.
 | `savings_goal_deadline` | timestamptz | nullable |
 | `created_at` | timestamptz | default `now()` |
 | `password_changed_at` | timestamptz | nullable; set on password reset. Access tokens issued before it are rejected |
+| `avatar_url` | text | nullable (006); the picture to show: a Cloudinary https link, or `/uploads/<name>` for a file on disk |
+| `avatar_public_id` | text | nullable (006); the Cloudinary id, used to delete the old picture; never returned by the API |
 
 **`bills`**: `id`, `user_id`, `name` text, `amount` numeric(15,2) `CHECK (> 0)`, `due_date` timestamptz (nullable),
 `created_at`. Index `bills_user_idx (user_id)`.

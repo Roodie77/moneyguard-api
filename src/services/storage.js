@@ -1,5 +1,9 @@
 import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
+
+const UPLOAD_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../uploads');
 
 // Where uploaded files are kept. With CLOUDINARY_URL set (cloudinary://API_KEY:API_SECRET@CLOUD_NAME) they go to
 // Cloudinary and are opened by their https link. Without it they stay on this server's disk (src/uploads) and are
@@ -36,10 +40,10 @@ let driver = cloudinaryDriver;
 export const setCloudDriver = (replacement) => { driver = replacement; };
 
 // Keeps a file that multer has just received. On disk it is already saved; in the cloud it is uploaded now, into a
-// folder per user (moneyguard/<userId>) so the Cloudinary media library stays tidy.
-export async function storeUpload(file, userId) {
+// folder per user (moneyguard/<userId>, or moneyguard/<userId>/<subfolder>) so the Cloudinary media library stays tidy.
+export async function storeUpload(file, userId, subfolder) {
   if (!cloudEnabled()) return { filename: file.filename, url: null, publicId: null, resourceType: null };
-  const folder = `${process.env.CLOUDINARY_FOLDER || 'moneyguard'}/${userId}`;
+  const folder = `${process.env.CLOUDINARY_FOLDER || 'moneyguard'}/${userId}${subfolder ? `/${subfolder}` : ''}`;
   const stored = await driver.upload(file.buffer, { folder, mimetype: file.mimetype });
   return { filename: stored.publicId.split('/').pop(), ...stored };
 }
@@ -52,6 +56,17 @@ export async function discardUpload(file, stored) {
     else if (stored?.publicId) await driver.remove(stored);
   } catch (err) {
     logger.warn(`Could not clean up an upload: ${err.message}`);
+  }
+}
+
+// Deletes a file that was stored earlier, given its saved link and Cloudinary id (a replaced or removed profile picture).
+// A Cloudinary file is deleted by its id; a file on this server's disk by the name in its /uploads/ link. Never throws.
+export async function removeStored({ url, publicId }) {
+  try {
+    if (publicId) await driver.remove({ publicId, resourceType: 'image' });
+    else if (typeof url === 'string' && url.startsWith('/uploads/')) await fs.rm(path.join(UPLOAD_DIR, path.basename(url)), { force: true });
+  } catch (err) {
+    logger.warn(`Could not delete an old file: ${err.message}`);
   }
 }
 
