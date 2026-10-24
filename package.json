@@ -44,12 +44,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GAMEWIZ170/moneyguard-api.git"
+    "url": "git+https://github.com/Roodie77/moneyguard-api.git"
   },
   "keywords": [],
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/GAMEWIZ170/moneyguard-api/issues"
+    "url": "https://github.com/Roodie77/moneyguard-api/issues"
   },
-  "homepage": "https://github.com/GAMEWIZ170/moneyguard-api#readme"
+  "homepage": "https://github.com/Roodie77/moneyguard-api#readme"
 }
