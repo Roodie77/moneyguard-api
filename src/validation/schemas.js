@@ -151,7 +151,7 @@ export const alertsQuery = Joi.object({
   ...page,
 });
 
-export const canIAfford =Joi.object({ amount: positiveMoney.required() });
+export const canIAfford = Joi.object({ amount: positiveMoney.required() });
 
 export const projectedBalance = Joi.object({
   monthlyIncome: money.required(),
