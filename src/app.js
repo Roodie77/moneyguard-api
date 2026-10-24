@@ -46,21 +46,19 @@ app.get('/docs', (req, res) => res.type('html').send(`<!doctype html>
 <script>SwaggerUIBundle({ url: '/openapi.yaml', dom_id: '#ui' })</script></body></html>`));
 
 // Which websites may call the API from a browser. Set CORS_ORIGINS to a comma-separated list.
+// Until the frontend exists, only this placeholder is allowed. Replace it via CORS_ORIGINS.
+const PLACEHOLDER_ORIGIN = 'https://frontend-placeholder.example.com';
+
 function corsOrigin(origin, callback) {
   // No Origin header: mobile app, Postman, curl. CORS only applies to browsers.
   if (!origin) return callback(null, true);
 
-  const allowed = (process.env.CORS_ORIGINS || '')
+  const configured = (process.env.CORS_ORIGINS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // Local development with no list set: allow everything.
-  if (allowed.length === 0 && process.env.NODE_ENV !== 'production') {
-    return callback(null, true);
-  }
-
-  // Otherwise only the listed origins; others get no CORS headers and the browser blocks them.
+  const allowed = configured.length > 0 ? configured : [PLACEHOLDER_ORIGIN];
   return callback(null, allowed.includes(origin));
 }
 
