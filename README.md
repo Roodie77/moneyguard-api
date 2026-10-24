@@ -4,6 +4,8 @@
 
 **Co-author:** Jonluis Paa Kojo Classpeter
 
+**Collaborator:** Chioma Ikeh
+
 REST API for MoneyGuard: track balance, bills and expenses, get a daily "safe to spend" figure, see where the money goes (analytics),
 set your own spending and balance alerts, and run affordability calculators (projected balance after a new EMI, loan affordability, cash-flow projection).
 
@@ -28,6 +30,13 @@ Node 20+, Express, PostgreSQL, JWT auth. Optional Redis for rate limits shared a
 - **Calculators:** "can I afford this?", projected balance after a new EMI, month-by-month cash flow, and loan affordability.
 - **Files:** upload and list receipts and documents (images, PDF, video up to 20 MB).
 - **Safety and reliability:** input validation on every write, per-IP rate limits, idempotency keys for safe retries, request ids in every response and log line, and a `/health` check. See [How it behaves](#how-it-behaves).
+  
+- ## Security Headers
+
+- Integrated **Helmet 8.3.0** into the Express application to set HTTP security headers.
+- Applied Helmet middleware globally using `app.use(helmet())`.
+- Enabled default protections including Content Security Policy, HTTP Strict Transport Security, `X-Content-Type-Options`, `X-Frame-Options`, and Referrer Policy.
+- Verified the expected security headers using an isolated Express test. Full application verification remains pending.
 
 Every endpoint is listed in [API endpoints](#api-endpoints), with a request and response example for each.
 
