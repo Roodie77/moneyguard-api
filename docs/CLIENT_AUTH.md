@@ -103,4 +103,6 @@ export function restoreSession() {
 
 Two browser tabs refreshing at the same moment can also collide. If that matters, use `navigator.locks.request('refresh', ...)` around the refresh call.
 
+**After changing the password** (`PUT /api/me/password`) the answer is a **new session** for this device, and every other login is ended. Replace the stored refresh token and the in-memory access token with it right away. Skipping this logs the user out on the next request, which looks like "it logged me out when I changed my password".
+
 **Trade-off to know:** anything in `localStorage` can be read by a script injected into the page (XSS), so keep the app free of untrusted HTML. A mobile app should use the Keychain or Keystore instead, as described above.

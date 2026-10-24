@@ -1,10 +1,11 @@
 import express from 'express';
+import bcrypt from 'bcrypt';
 import { query, withTransaction } from '../utils/db.js';
 import { asyncHandler as h } from '../utils/asyncHandler.js';
-import { authMiddleware } from '../middleware/auth.js';
+import { authMiddleware, signToken, ACCESS_TOKEN_SECONDS } from '../middleware/auth.js';
 import { validate, validateQuery } from '../middleware/validate.js';
 import { uuidParam } from '../middleware/uuidParam.js';
-import { writeLimiter, calcLimiter, readLimiter } from '../middleware/rateLimit.js';
+import { writeLimiter, calcLimiter, readLimiter, authLimiter } from '../middleware/rateLimit.js';
 import { upload, uploadAvatar } from '../middleware/upload.js';
 import { storeUpload, discardUpload, removeStored, withUrl } from '../services/storage.js';
 import * as schemas from '../validation/schemas.js';
@@ -16,6 +17,7 @@ import {
   calculateProjectedBalance,
 } from '../services/calculator.js';
 import { safeToSpendFor } from '../services/budget.js';
+import { issueRefreshToken } from '../services/tokens.js';
 import { evaluateAlerts } from '../services/alerts.js';
 import alertsRouter from './alerts.js';
 import analyticsRouter from './analytics.js';
@@ -42,10 +44,64 @@ const checkAlerts = (req) => evaluateAlerts(req.userId);
 
 // ---- Profile ----
 
+// The user as the API shows them: never the password hash or other internal columns.
+const publicUser = ({ passwordHash, passwordChangedAt, avatarPublicId, ...safe }) => safe;
+
+// A wrong current password is a 400 with the field named (so the app can show it under the input), not a 401:
+// a 401 means "your login token is no good" and makes apps try to refresh the session or log the user out.
+const wrongPassword = (res, field = 'currentPassword', message = 'Current password is incorrect') =>
+  res.status(400).json({ error: 'Validation failed', details: [{ field, message }] });
+
 router.get('/me', readLimiter, (req, res) => {
-  const { passwordHash, passwordChangedAt, avatarPublicId, ...safe } = req.user;
-  res.json(safe);
+  res.json(publicUser(req.user));
 });
+
+// Edit name, phone or email. Only the fields sent change. Changing the email needs the current password.
+// (authLimiter: wrong passwords here count towards the same 8-tries-per-15-minutes limit as login.)
+router.put('/me', authLimiter, validate(schemas.profileUpdate), h(async (req, res) => {
+  const { name, phone, email, currentPassword } = req.body;
+  const sets = [];
+  const params = [];
+  const set = (column, value) => { params.push(value); sets.push(`${column} = $${params.length}`); };
+
+  if (email !== undefined && email !== req.user.email) {
+    if (!(await bcrypt.compare(currentPassword, req.user.passwordHash))) return wrongPassword(res);
+    set('email', email);
+  }
+  if (name !== undefined) set('name', name || null);
+  if (phone !== undefined) set('phone', phone || null);
+  if (!sets.length) return res.json(publicUser(req.user)); // for example the same email again: nothing to change
+
+  params.push(req.userId);
+  try {
+    const [user] = await query(`UPDATE users SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`, params);
+    res.json(publicUser(user));
+  } catch (err) {
+    // The UNIQUE constraint is the real guard, as at sign-up.
+    if (err.code === '23505') return res.status(409).json({ error: 'Email already registered' });
+    throw err;
+  }
+}));
+
+// Changes the password. Every other login (all refresh tokens, and access tokens issued before now) is ended, and a fresh
+// session is returned for this device, so the user stays signed in here: replace the stored tokens with these.
+router.put('/me/password', authLimiter, validate(schemas.changePassword), h(async (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+  if (!(await bcrypt.compare(currentPassword, req.user.passwordHash))) return wrongPassword(res);
+  if (newPassword === currentPassword) return wrongPassword(res, 'newPassword', 'New password must be different from the current one');
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  await query(
+    `WITH changed AS (
+       UPDATE users SET password_hash = $1, password_changed_at = now() WHERE id = $2 RETURNING id
+     ), signed_out AS (
+       DELETE FROM refresh_tokens WHERE user_id = $2
+     )
+     SELECT id FROM changed`,
+    [passwordHash, req.userId],
+  );
+  res.json({ token: signToken(req.userId), expiresIn: ACCESS_TOKEN_SECONDS, refreshToken: await issueRefreshToken(req.userId) });
+}));
 
 // Sets or replaces the profile picture (an image in the form field "avatar", at most 5 MB). The old picture is deleted
 // once the new one is saved, so a user never has more than one stored.
@@ -150,6 +206,25 @@ router.post('/bills', writeLimiter, validate(schemas.bill), h(async (req, res) =
   );
   await checkAlerts(req);
   res.status(201).json(bill);
+}));
+
+// Edits a bill. Only the fields sent change; a dueDate of null removes the due date.
+router.put('/bills/:id', writeLimiter, validate(schemas.billUpdate), h(async (req, res) => {
+  const { name, amount, dueDate } = req.body;
+  const sets = [];
+  const params = [];
+  const set = (column, value) => { params.push(value); sets.push(`${column} = $${params.length}`); };
+  if (name !== undefined) set('name', name);
+  if (amount !== undefined) set('amount', amount);
+  if (dueDate !== undefined) set('due_date', dueDate);
+  params.push(req.params.id, req.userId);
+  const [bill] = await query(
+    `UPDATE bills SET ${sets.join(', ')} WHERE id = $${params.length - 1} AND user_id = $${params.length} RETURNING *`,
+    params,
+  );
+  if (!bill) return res.status(404).json({ error: 'Bill not found' });
+  await checkAlerts(req); // a changed amount or due date can change an alert
+  res.json(bill);
 }));
 
 router.delete('/bills/:id', writeLimiter, h(async (req, res) => {

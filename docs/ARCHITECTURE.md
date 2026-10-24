@@ -45,9 +45,11 @@ Order matters: the idempotency middleware runs before auth, which is why its cac
 | Profile | `PUT /api/balance` | yes | write | replaces the balance |
 | Profile | `PUT /api/next-income` | yes | write | |
 | Profile | `PUT /api/savings-goal` | yes | write | |
+| Profile | `PUT /api/me` | yes | auth | edit name, phone, email (email needs the current password); wrong passwords count towards the failed-attempts limit |
+| Profile | `PUT /api/me/password` | yes | auth | needs the current password; ends every other session and returns a fresh one for this device |
 | Profile | `PUT`, `DELETE /api/me/avatar` | yes | write | profile picture (image, max 5 MB) kept on Cloudinary or on disk; the old one is deleted |
 | Profile | `GET`, `PUT /api/financial-profile` | yes | read / write | the numbers typed into the calculators, saved per user (partial saves; defaults when nothing is saved) |
-| Bills | `GET/POST /api/bills`, `DELETE /api/bills/:id` | yes | read / write | |
+| Bills | `GET/POST /api/bills`, `PUT`, `DELETE /api/bills/:id` | yes | read / write | PUT edits only the fields sent; `dueDate: null` clears it |
 | Expenses | `GET /api/expenses` | yes | read | filters (`from`, `to`, `category`, `minAmount`, `maxAmount`), `limit`/`offset`, `X-Total-Count` |
 | Expenses | `POST /api/expenses` | yes | write | atomic; refuses overspend (422) |
 | Expenses | `PUT`, `DELETE /api/expenses/:id` | yes | write | move the balance by the difference / refund, atomically |
@@ -176,6 +178,7 @@ Deleting a user removes all of their rows.
 | `password_changed_at` | timestamptz | nullable; set on password reset. Access tokens issued before it are rejected |
 | `avatar_url` | text | nullable (006); the picture to show: a Cloudinary https link, or `/uploads/<name>` for a file on disk |
 | `avatar_public_id` | text | nullable (006); the Cloudinary id, used to delete the old picture; never returned by the API |
+| `name` | text | nullable (007); the display name, optional at sign-up and editable |
 
 **`bills`**: `id`, `user_id`, `name` text, `amount` numeric(15,2) `CHECK (> 0)`, `due_date` timestamptz (nullable),
 `created_at`. Index `bills_user_idx (user_id)`.
@@ -352,8 +355,8 @@ no floating-point drift.
    token only.
 6. **HTTPS is not terminated by the app.** Put it behind a TLS-terminating proxy and set `TRUST_PROXY` correctly. Tokens
    travel in headers and bodies, so plain HTTP is not acceptable in production.
-7. **No account deletion, email change or password change (while logged in) endpoints yet.** Password reset is the only way
-   to change a password.
+7. **No account deletion endpoint yet.** Name, phone, email and password can be edited (`PUT /api/me`, `PUT /api/me/password`).
+   A wrong current password there is a 400 naming `currentPassword` (never a 401, which clients read as an expired token).
 8. **Idempotency caches responses verbatim**, including tokens from login/register if a client sends the header there.
    Clients are told not to; the server does not enforce it.
 

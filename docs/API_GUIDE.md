@@ -76,6 +76,39 @@ No wristband, or a broken one → the server says **401**. Section 3 explains ho
 
 The 400 answer names the field and says what it expected, so show that message to the user.
 
+### Letting people type a date (keyboard) instead of only tapping
+
+Many people find typing a date faster than a calendar. **The API does not care how the date was entered, only what is sent** (`YYYY-MM-DD`). So the app should let people type, then turn what they typed into that format.
+
+**Turn typed text into the format the API wants** (day first, as used in Nigeria):
+
+```js
+// "25/12/2026", "5-1-2027", "01.02.2026" -> "2026-12-25", or null if it is not a real date
+export function parseTypedDate(text) {
+  const m = /^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/.exec(String(text).trim());
+  if (!m) return null;
+  const [day, month, year] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const d = new Date(Date.UTC(year, month - 1, day));
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month - 1 || d.getUTCDate() !== day) return null; // 31/04 and 29/02/2027
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+```
+
+If it returns `null`, show "Enter a real date like 25/12/2026" under the field. Do not send it to the API.
+
+**Make the picker accept the keyboard:**
+
+| Where | What to do |
+|---|---|
+| Web, plain HTML | `<input type="date">` already lets you type on a computer: click the day, month or year part and type. On a phone it opens the native calendar. If you need typing everywhere, use `<input type="text" inputmode="numeric" placeholder="DD/MM/YYYY">` and `parseTypedDate` |
+| Web, MUI | Use the field version (`DatePicker` / `DesktopDatePicker`): the date segments in the input are typeable. `MobileDatePicker` is calendar-only |
+| Web, other libraries | Pick one with a text input (for example react-datepicker with `dateFormat="dd/MM/yyyy"`) rather than a calendar-only popup |
+| Flutter | `showDatePicker(..., initialEntryMode: DatePickerEntryMode.input)` opens with the keyboard and a text field; the user can switch to the calendar |
+| Android (Material) | `MaterialDatePicker.Builder.datePicker().setInputMode(MaterialDatePicker.INPUT_MODE_TEXT)` |
+| React Native | The native date pickers have no typing. Use a `TextInput` with `keyboardType="number-pad"` and `parseTypedDate` (optionally with a calendar button next to it) |
+
+Keep the date in the field when the user comes back to edit it, and show the saved date in the same format (for example `25/12/2026`), converting from the `...T00:00:00.000Z` the API returns.
+
 ### When something goes wrong
 
 Every error looks like this:
@@ -283,6 +316,39 @@ Every letter from here on needs the wristband header.
 
 Returns the same `user` object you saw at login, with the freshest numbers.
 
+### Edit what you entered at sign-up: name, phone, email, password
+
+Everything a user typed when they signed up can be changed later, in the app:
+
+| Detail | How to change it |
+|---|---|
+| Name, phone | `PUT /api/me` with `{ "name": "...", "phone": "..." }` |
+| Email | `PUT /api/me` with `{ "email": "...", "currentPassword": "..." }` |
+| Password | `PUT /api/me/password` with `{ "currentPassword": "...", "newPassword": "..." }` |
+| Profile picture | `PUT` and `DELETE /api/me/avatar` |
+| Balance | `PUT /api/balance` |
+| Next pay (amount and date) | `PUT /api/next-income` |
+| Savings goal | `PUT /api/savings-goal` |
+| Calculator numbers | `PUT /api/financial-profile` |
+| A bill | `PUT /api/bills/{id}` (send only what changed; `"dueDate": null` removes the date) |
+| An expense | `PUT /api/expenses/{id}` |
+| Alert rules | `PUT /api/alert-rules` |
+
+**Show the current values in the form** (from `GET /api/me`, `/api/financial-profile`, `/api/bills` and so on) so the user edits what is there instead of starting from empty fields.
+
+**Rules for `PUT /api/me`:**
+- Send only what changed (at least one field). An empty `name` or `phone` (or `null`) clears it.
+- **Changing the email needs the current password.** Without it you get a 400 naming `currentPassword`. An email another account uses gives **409**.
+- A wrong password is a **400** with `details: [{ "field": "currentPassword", ... }]`, never a 401. Show it under that input and do **not** treat it as an expired login. Wrong guesses count towards the limit of 8 failed attempts per 15 minutes.
+
+**Changing the password logs out every other device**, and the answer contains a **new session for this one**:
+
+```json
+{ "token": "eyJ...", "expiresIn": 3600, "refreshToken": "..." }
+```
+
+Store the new `refreshToken` and use the new `token` straight away. If you keep using the old ones, the next request gets a 401 and the user is logged out.
+
 ### Set the piggy-bank amount `PUT /api/balance`
 
 ```json
@@ -380,6 +446,10 @@ An array, oldest first:
 - `dueDate`: optional.
 
 Answer (**201**): the new bill.
+
+### Edit one `PUT /api/bills/{id}`
+
+Send only what changed (at least one of `name`, `amount`, `dueDate`). `"dueDate": null` removes the due date. Answer: the updated bill, or **404** if it does not exist (or is not yours).
 
 ### Remove one `DELETE /api/bills/{id}`
 

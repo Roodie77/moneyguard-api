@@ -21,7 +21,7 @@ Node 20+, Express, PostgreSQL, JWT auth. Optional Redis for rate limits shared a
 ## Features
 
 - **Accounts and sessions:** register, log in, short-lived access tokens (1 hour) with rotating refresh tokens (7 days), log out, and password reset by emailed single-use token. Passwords are stored as bcrypt hashes.
-- **Profile:** current balance, next expected income, savings goal, a profile picture, and the **calculator numbers** (monthly income, expenses, loan payments, interest rate, term), saved per user so the app can pre-fill its calculator screens again after logout and login.
+- **Profile:** name, email, phone and password (all editable in the app; changing the email or password needs the current password), current balance, next expected income, savings goal, a profile picture, and the **calculator numbers** (monthly income, expenses, loan payments, interest rate, term), saved per user so the app can pre-fill its calculator screens again after logout and login.
 - **Bills:** add, list and remove upcoming bills (they feed the safe-to-spend figure but do not change the balance).
 - **Expenses (transactions):** record, list with filters and paging (date range, category, amount), edit and delete. Every change moves the balance atomically, and spending more than the balance is refused.
 - **Safe to spend:** a daily figure worked out from the balance, upcoming bills, the savings goal and the days until the next income (`GET /api/dashboard`).
@@ -104,12 +104,14 @@ The interactive reference is at `/docs` (Swagger UI) and the contract is [`src/d
 | Auth | `POST /api/auth/forgot-password` | Public | Email a single-use password reset token |
 | Auth | `POST /api/auth/reset-password` | Public | Set a new password with the emailed token |
 | Profile | `GET /api/me` | Yes | The signed-in user |
+| Profile | `PUT /api/me` | Yes | Edit name, phone or email (changing the email needs the current password) |
+| Profile | `PUT /api/me/password` | Yes | Change the password (needs the current password). Ends every other login and returns a fresh session for this device |
 | Profile | `PUT /api/balance` | Yes | Set the current balance |
 | Profile | `PUT /api/next-income` | Yes | Set the next expected income and date |
 | Profile | `PUT /api/savings-goal` | Yes | Set a savings goal and deadline |
 | Profile | `GET /api/financial-profile`, `PUT /api/financial-profile` | Yes | Load and save the numbers typed into the calculators, so they are not asked for again after login |
 | Profile | `PUT /api/me/avatar`, `DELETE /api/me/avatar` | Yes | Set, replace or remove the profile picture (an image, at most 5 MB). The link is `avatarUrl` on `/api/me` |
-| Bills | `GET /api/bills`, `POST /api/bills`, `DELETE /api/bills/:id` | Yes | List, add, remove bills |
+| Bills | `GET /api/bills`, `POST /api/bills`, `PUT /api/bills/:id`, `DELETE /api/bills/:id` | Yes | List, add, edit, remove bills |
 | Expenses | `GET /api/expenses` | Yes | List with filters and paging |
 | Expenses | `POST /api/expenses` | Yes | Record an expense (refused with 422 if it exceeds the balance) |
 | Expenses | `PUT /api/expenses/:id`, `DELETE /api/expenses/:id` | Yes | Edit or delete; the balance moves with it |
@@ -508,7 +510,7 @@ POST {{baseUrl}}/api/auth/logout
 ### Profile
 
 <details>
-<summary>Show 11 examples</summary>
+<summary>Show 14 examples</summary>
 
 #### P1. Call a protected endpoint without a token
 
@@ -783,6 +785,105 @@ DELETE {{baseUrl}}/api/me/avatar
   "avatarUrl": null
 }
 ```
+
+#### P12. Edit my name and phone
+
+```http
+PUT {{baseUrl}}/api/me
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "name": "Jonathan A. Adewale",
+  "phone": "08012345678"
+}
+```
+
+**Response: `200 OK`** (the updated user)
+
+```json
+{
+  "id": "f1682885-5981-4810-8d0e-588c00bcca2f",
+  "email": "jonathan@example.com",
+  "phone": "08012345678",
+  "balance": 0,
+  "nextIncomeAmount": 0,
+  "nextIncomeDate": null,
+  "savingsGoalAmount": 0,
+  "savingsGoalDeadline": null,
+  "createdAt": "2026-10-24T22:49:52.536Z",
+  "avatarUrl": null,
+  "name": "Jonathan A. Adewale"
+}
+```
+
+> Send only what changed (at least one field). `null` or an empty text clears the name or phone. Nothing else on the account can be changed here. `name` can also be sent when registering (optional).
+
+#### P13. Change my email (needs the current password)
+
+```http
+PUT {{baseUrl}}/api/me
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "email": "new@example.com",
+  "currentPassword": "WrongPass999"
+}
+```
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "currentPassword",
+      "message": "Current password is incorrect"
+    }
+  ]
+}
+```
+
+> With the right password the answer is `200` and the updated user. Leaving `currentPassword` out gives a `400` on the same field, and an email another account already uses gives `409`. A wrong password is a **400, not a 401**, so apps do not mistake it for an expired login. Wrong guesses count towards the limit of 8 failed attempts per 15 minutes.
+
+#### P14. Change my password
+
+```http
+PUT {{baseUrl}}/api/me/password
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "currentPassword": "StrongPass123",
+  "newPassword": "EvenStronger456"
+}
+```
+
+**Response: `200 OK`**
+
+```json
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ...",
+  "expiresIn": 3600,
+  "refreshToken": "8VM8zrCm5Qecy_cDkb9KbDB02SRcIjaV6et7zJ6__48"
+}
+```
+
+> **Replace the stored tokens with these.** The password change ends every other login (all refresh tokens and older access tokens), including the one used for this request, so the old tokens stop working. The new password follows the usual rules (8 characters or more, at most 72 bytes) and must differ from the current one.
 
 </details>
 
@@ -2079,7 +2180,7 @@ Most tests start the real app on a random port and call it over HTTP, like Postm
 | Files | What they cover |
 |---|---|
 | `auth`, `tokens`, `edge-auth`, `edge-auth-limits` | Register, login, wrong passwords, refresh tokens (single use, reuse detection, expiry), logout, password reset, and the rate limits on those endpoints |
-| `profile`, `financial-profile`, `logout-keeps-data`, `avatar`, `avatar-cloud`, `bills`, `uploads`, `cloud-storage` | Balance, income and savings-goal updates, the profile picture (set, replace, remove, type and size limits, on disk and on Cloudinary), the saved calculator numbers (defaults, partial saves, validation, privacy, and that they and all other data survive logout and login), bills, file upload rules (allowed types, size limit, safe file names), and uploads to Cloudinary (tested with a fake Cloudinary, so no account is needed): the returned link, per-user folders, no copy left on disk, and the uploaded copy removed again if the database record cannot be saved |
+| `profile`, `financial-profile`, `logout-keeps-data`, `avatar`, `avatar-cloud`, `account-edit`, `account-edit-limits`, `bills`, `bills-edit`, `uploads`, `cloud-storage` | Balance, income and savings-goal updates, the profile picture (set, replace, remove, type and size limits, on disk and on Cloudinary), the saved calculator numbers (defaults, partial saves, validation, privacy, and that they and all other data survive logout and login), bills, file upload rules (allowed types, size limit, safe file names), and uploads to Cloudinary (tested with a fake Cloudinary, so no account is needed): the returned link, per-user folders, no copy left on disk, and the uploaded copy removed again if the database record cannot be saved |
 | `expenses`, `expenses-manage`, `expenses-race`, `overspend`, `edge-money` | Recording, filtering, paging, editing and deleting expenses, exact money maths, and that simultaneous requests can never overspend the balance |
 | `analytics` | Summary totals, per-category percentages, day and month grouping in UTC |
 | `alert-rules`, `alert-rules-validation`, `alert-engine`, `alerts-flow` | Setting thresholds, what each of the six rule types fires on, firing once per period, notifications, marking alerts read |
@@ -2159,10 +2260,10 @@ Throughput scales with more instances behind a load balancer plus `REDIS_URL`; t
 
 ## Migrations
 
-Add a new file `src/db/migrations/007_what_it_does.sql` and run `npm run migrate`. Files run once, in name order,
+Add a new file `src/db/migrations/008_what_it_does.sql` and run `npm run migrate`. Files run once, in name order,
 each in its own transaction. Never edit a migration that has already been applied; add a new one.
 
-The project has six so far (001 initial tables, 002 refresh and reset tokens, 003 alerts and analytics, 004 Cloudinary file links, 005 saved calculator numbers, 006 profile picture).
+The project has seven so far (001 initial tables, 002 refresh and reset tokens, 003 alerts and analytics, 004 Cloudinary file links, 005 saved calculator numbers, 006 profile picture, 007 user name).
 **Run `npm run migrate` after every `git pull` that brings a new migration file**, and on every deploy (the Render start command does it for you). Skipping it makes the new code fail with errors such as `relation "..." does not exist` or `column "..." does not exist`.
 
 ## Deploying to Render
@@ -2210,6 +2311,6 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
 - **CORS allows only a placeholder origin for now.** Browsers can call the API only from the origins in `CORS_ORIGINS`. Set the real frontend address there before launch.
 - **Password-reset emails need a provider.** The reset flow works end to end, but `src/services/mailer.js` only logs the token (outside production) until you connect an email service.
 - **No notifications are delivered.** Alerts appear when the app asks for them (`GET /api/alerts` or the dashboard's `unreadAlerts`). Push or email needs a sender in `src/services/notifier.js`.
-- **The profile is minimal.** There are no endpoints yet to change the email or phone, change the password while signed in, or delete the account. Only expenses are recorded as transactions, not income.
+- **There is no endpoint to delete an account yet.** Only expenses are recorded as transactions, not income.
 - **HTTPS is not done by the app.** Render (or your proxy) must terminate it. Helmet sends the HTTPS-only header, but the app itself speaks plain HTTP.
 - **Access tokens last 1 hour** and cannot be revoked individually: logout ends the refresh token, and a password reset invalidates earlier access tokens, but a stolen access token otherwise works until it expires.

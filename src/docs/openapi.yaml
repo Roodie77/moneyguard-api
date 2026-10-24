@@ -188,6 +188,34 @@ paths:
                   - { $ref: '#/components/schemas/Error' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/me/password:
+    put:
+      tags: [Profile]
+      summary: Change my password
+      description: |
+        Needs the current password. On success the password changes and **every other login is ended** (all refresh tokens, and
+        access tokens issued before now). A fresh session for this device is returned: **replace the stored tokens with it**,
+        or the user will be logged out on the next request.
+
+        A wrong current password is a **400** with `details` naming `currentPassword` (not a 401, which would make apps
+        think the login token is bad). Wrong guesses count towards the limit of 8 failed attempts per 15 minutes.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordInput' }
+      responses:
+        '200':
+          description: Changed. The new session for this device.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/me/avatar:
     put:
       tags: [Profile]
@@ -294,6 +322,36 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/me:
+    put:
+      tags: [Profile]
+      summary: Edit my name, phone or email
+      description: |
+        Send only the fields that changed (at least one). `name` or `phone` set to `null` or an empty text clears it.
+        **Changing the email also needs `currentPassword`** (a stolen login token alone must not be enough to take over an
+        account). A wrong current password is a **400** naming `currentPassword`. An email that another account uses is a
+        **409**. Nothing else on the account can be changed here: the balance and the other details have their own endpoints.
+        Wrong passwords count towards the limit of 8 failed attempts per 15 minutes.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProfileUpdateInput' }
+      responses:
+        '200':
+          description: The updated user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Email already registered to another account
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     get:
       tags: [Profile]
       summary: Current user
@@ -437,6 +495,39 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /api/bills/{id}:
+    put:
+      tags: [Bills]
+      summary: Edit a bill
+      description: Send only the fields that changed (at least one). A `dueDate` of `null` removes the due date.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/IdempotencyKey' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                amount: { $ref: '#/components/schemas/PositiveMoney' }
+                dueDate: { type: string, format: date-time, nullable: true }
+      responses:
+        '200':
+          description: The updated bill
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bill' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: No such bill (or it is not yours)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     delete:
       tags: [Bills]
       summary: Delete a bill
@@ -1007,7 +1098,23 @@ components:
       properties:
         email: { type: string, format: email, maxLength: 254, description: 'ASCII only. Trimmed and lowercased by the server.' }
         password: { type: string, minLength: 8, description: 'At most 72 bytes (accented and non-Latin characters use 2-4 bytes each).' }
+        name: { type: string, maxLength: 100, nullable: true, example: Jonathan Adewale, description: Optional display name. }
         phone: { type: string, nullable: true, example: '+91 98765 43210' }
+    ProfileUpdateInput:
+      type: object
+      minProperties: 1
+      description: Any of these fields; at least one. Other fields are ignored.
+      properties:
+        name: { type: string, maxLength: 100, nullable: true }
+        phone: { type: string, nullable: true, example: '+234 801 234 5678' }
+        email: { type: string, format: email, description: Needs currentPassword. }
+        currentPassword: { type: string, description: Required when email is sent. }
+    ChangePasswordInput:
+      type: object
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword: { type: string }
+        newPassword: { type: string, minLength: 8, description: 'At most 72 bytes, and different from the current one.' }
     LoginInput:
       type: object
       required: [email, password]
@@ -1017,10 +1124,11 @@ components:
 
     User:
       type: object
-      required: [id, email, phone, avatarUrl, balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline, createdAt]
+      required: [id, email, name, phone, avatarUrl, balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline, createdAt]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
+        name: { type: string, nullable: true, description: The display name entered at sign-up. }
         phone: { type: string, nullable: true }
         avatarUrl: { type: string, nullable: true, description: 'The profile picture to show: a full https link, or a path such as `/uploads/abc.png` that needs the server address in front. Null if none.' }
         balance: { type: number }

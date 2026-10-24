@@ -36,10 +36,29 @@ const email = Joi.string().trim().lowercase().email({ allowUnicode: false }).max
 const password = Joi.string().min(8).custom((value, helpers) =>
   Buffer.byteLength(value) > 72 ? helpers.message('{#label} must be at most 72 bytes (non-latin characters use more than one)') : value);
 
+const PHONE = /^\+?[0-9 ()-]{7,20}$/;
+
 export const register = Joi.object({
   email: email.required(),
   password: password.required(),
-  phone: Joi.string().trim().pattern(/^\+?[0-9 ()-]{7,20}$/).allow(null, ''),
+  name: text(100).allow(null, ''),
+  phone: Joi.string().trim().pattern(PHONE).allow(null, ''),
+});
+
+// Edit the details entered at sign-up. Send only what changed (at least one); null or '' clears a name or phone.
+// Changing the email also needs the current password: a stolen login token alone must not be enough to take over an account.
+export const profileUpdate = Joi.object({
+  name: text(100).allow(null, ''),
+  phone: Joi.string().trim().pattern(PHONE).allow(null, ''),
+  email,
+  currentPassword: Joi.string().max(72)
+    .when('email', { is: Joi.exist(), then: Joi.required() })
+    .messages({ 'any.required': 'currentPassword is required to change the email' }), // named, so the app can show it under that input
+}).min(1);
+
+export const changePassword = Joi.object({
+  currentPassword: Joi.string().max(72).required(),
+  newPassword: password.required(),
 });
 
 export const login = Joi.object({
@@ -86,6 +105,13 @@ export const bill = Joi.object({
   amount: positiveMoney.required(),
   dueDate: date.allow(null),
 });
+
+// Send only what changed (at least one). A dueDate of null removes the due date.
+export const billUpdate = Joi.object({
+  name: text(100).min(1),
+  amount: positiveMoney,
+  dueDate: date.allow(null),
+}).min(1);
 
 export const expense = Joi.object({
   amount: positiveMoney.required(),

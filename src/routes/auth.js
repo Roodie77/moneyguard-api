@@ -33,13 +33,13 @@ async function session(user) {
 }
 
 router.post('/register', authLimiter, validate(schemas.register), h(async (req, res) => {
-  const { email, password, phone } = req.body;
+  const { email, password, phone, name } = req.body;
   const passwordHash = await bcrypt.hash(password, 10);
 
   try {
     const [user] = await query(
-      'INSERT INTO users (email, phone, password_hash) VALUES ($1, $2, $3) RETURNING *',
-      [email, phone || null, passwordHash],
+      'INSERT INTO users (email, phone, password_hash, name) VALUES ($1, $2, $3, $4) RETURNING *',
+      [email, phone || null, passwordHash, name || null],
     );
     logger.info(`User registered: ${user.email}`);
     res.status(201).json(await session(user));
