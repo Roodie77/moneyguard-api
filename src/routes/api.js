@@ -371,15 +371,17 @@ router.get('/files', readLimiter, h(async (req, res) => {
 // ---- Dashboard and calculators ----
 
 router.get('/dashboard', readLimiter, h(async (req, res) => {
-  const { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount } = req.user;
-  const [safeToSpend, survival, recentExpenses, [{ unread }]] = await Promise.all([
+  const { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline } = req.user;
+  const [safeToSpend, survival, recentExpenses, [{ unread }], [{ billsCount }]] = await Promise.all([
     safeToSpendFor(req.user),
     forecastFor(req.user),
     query('SELECT * FROM expenses WHERE user_id = $1 ORDER BY date DESC LIMIT 5', [req.userId]),
     query('SELECT count(*)::int AS unread FROM alerts WHERE user_id = $1 AND read_at IS NULL', [req.userId]),
+    query('SELECT count(*)::int AS bills_count FROM bills WHERE user_id = $1', [req.userId]),
   ]);
   res.json({
-    user: { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount },
+    user: { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline },
+    billsCount, // how many bills the user has, for the "N bills in your plan" line
     safeToSpend,
     survival: forecastBrief(survival), // the chance the money lasts until the next income (see POST /api/forecast)
     recentExpenses,

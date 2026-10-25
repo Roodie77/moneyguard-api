@@ -589,7 +589,8 @@ One call for the whole home screen:
 
 ```json
 {
-  "user": { "balance": 1000, "nextIncomeAmount": 500, "nextIncomeDate": "2026-12-01T00:00:00.000Z", "savingsGoalAmount": 200 },
+  "user": { "balance": 1000, "nextIncomeAmount": 500, "nextIncomeDate": "2026-12-01T00:00:00.000Z", "savingsGoalAmount": 200, "savingsGoalDeadline": "2026-12-31T00:00:00.000Z" },
+  "billsCount": 3,
   "safeToSpend": {
     "dailySafeToSpend": 24.5,
     "remainingToday": 14.5,
@@ -607,6 +608,7 @@ One call for the whole home screen:
 
 What the numbers mean:
 
+- **`user.savingsGoalDeadline`** (or `null`) and **`billsCount`** exist so the Savings and Bills cards need no extra request: "Target by 31 Dec" and "3 bills in your plan". `billsCount` counts every bill; the amount in the Bills card is `safeToSpend.upcomingBillsTotal` (only bills due before the next income).
 - **`dailySafeToSpend`**: "You can spend about this much each day until the next pay." It is never negative. It is worked out from what you had **this morning** (today's spending is added back to the balance), so it **stays the same all day** and does not shrink as you spend.
 - **`spentToday`**: how much was spent so far today. A "day" is a **UTC** day, so it flips at midnight UTC, not at the phone's midnight.
 - **`remainingToday`**: `dailySafeToSpend − spentToday`. **Negative means the user is over budget today.** Show it in red.

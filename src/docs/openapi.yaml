@@ -1537,17 +1537,19 @@ components:
         warnings: { type: array, items: { type: string } }
     Dashboard:
       type: object
-      required: [user, safeToSpend, survival, recentExpenses, unreadAlerts]
+      required: [user, billsCount, safeToSpend, survival, recentExpenses, unreadAlerts]
       properties:
         survival: { $ref: '#/components/schemas/ForecastBrief' }
+        billsCount: { type: integer, minimum: 0, description: 'How many bills the user has (all of them, whatever their due date). The upcoming total is safeToSpend.upcomingBillsTotal.' }
         user:
           type: object
-          required: [balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount]
+          required: [balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline]
           properties:
             balance: { type: number }
             nextIncomeAmount: { type: number }
             nextIncomeDate: { type: string, format: date-time, nullable: true }
             savingsGoalAmount: { type: number }
+            savingsGoalDeadline: { type: string, format: date-time, nullable: true, description: 'The date the savings goal should be reached by, or null.' }
         safeToSpend: { $ref: '#/components/schemas/SafeToSpend' }
         recentExpenses:
           type: array
