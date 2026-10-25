@@ -188,7 +188,7 @@ test('the sweep deletes due accounts with no request at all, and leaves the othe
   await makeDue(due.user.id);
   await requestDeletion(notYet);
 
-  assert.ok(await sweep() >= 1);
+  await sweep(); // not asserting the count: another test file may sweep the shared database first, and that is fine
   assert.equal(await userExists(due.user.id), false);
   assert.equal(await rowsOf('bills', due.user.id), 0);
   assert.ok(await userExists(notYet.user.id));
