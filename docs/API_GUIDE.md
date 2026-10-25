@@ -376,6 +376,20 @@ This **replaces** the number. It does not add to it. Use it when the user says "
 
 `deadline` is optional. Answer: `{ "savingsGoalAmount": 200, "savingsGoalDeadline": "..." }`.
 
+### Will my money last? The survival forecast `POST /api/forecast`
+
+**Like you are five:** a weather forecast says "70% chance of rain", not "exactly 21 degrees". This does the same for a wallet. Instead of one average number, the server plays the days until the next income ten thousand times, using how this person really spends, and says "a 100% chance you run out if you buy this, but up to 19,309 is safe".
+
+**Send** (everything optional): `{ "amount": 40000, "inDays": 0, "confidence": 0.95 }`. **Get** `survivalProbability` and `ruinProbability` (0 to 1), `maxPurchaseNow`, `purchase` (the chance, a `verdict` of Safe / ThinkTwice / NotRecommended, and the shortfall in the worst 5% of cases), `ruinByDay` (the chance of having run out by each day, so a chart can show when the danger is), `model.source` (`default`, `blended`, `history`), a plain `summary` and a `disclaimer` that must be visible.
+
+It also appears, in short form, as `survival` on `GET /api/dashboard` and as `forecast` on `POST /api/can-i-afford`. Nothing old changed.
+
+**Frontend:** show percentages the way people read them (never a flat 0% or 100% unless true; or use `summary`), colour by risk, say "rough estimate" when `model.source` is `default`, and do not call it on every keystroke (20 calls a minute).
+
+### Ask the assistant `POST /api/assistant`
+
+A chat box for plain-words questions ("Can I afford 40000?"). Send `{ "message": "..." }` (1 to 500 characters); get `{ reply, facts, checked, replacedUnverifiedReply }`. The model (Ollama) cannot calculate: it asks the forecast for numbers, and every number in its reply is checked against the forecast. If it invents one, the reply is replaced by the forecast's own sentence. Only the question and the forecast numbers leave the server. Handle 429 (10 a minute), 502 (AI unavailable) and 503 (not turned on). It takes 1 to 3 seconds, so show a loading state and disable Send meanwhile.
+
 ### Delete my account, with one day to change my mind `DELETE /api/me`
 
 **Like you are five:** deleting an account is like throwing a notebook in the bin. Because that cannot be undone, the helper does not bin it straight away. It puts the notebook in a box marked **"will be thrown away tomorrow"**, and **tells you clearly**. During that day you can take the notebook back out. After the day, it is thrown away for good, by itself.
