@@ -89,7 +89,7 @@ src/utils/            db.js (pool, camelCase rows), redis.js, logger.js, asyncHa
   A database that is saturated (no connection within 5 s) or a query over 10 s becomes `503` with `Retry-After`.
 - **Naming:** columns are `snake_case`; `db.query()` converts rows to `camelCase`, which is what the API returns.
 - **Money:** `NUMERIC(15,2)` in Postgres. `pg` returns NUMERIC as strings; `db.js` parses them to numbers, which is exact
-  here because amounts are capped at 1e12 with 2 decimals.
+  here because amounts are capped at 9e12 (nine trillion) with 2 decimals: in cents that is below 2^53, and the column holds up to 9,999,999,999,999.99.
 - **Dates:** `timestamptz`. Inputs must be real calendar dates between 1900 and 2200; date-times need a zone. All "today"
   and "days until income" maths use UTC days.
 - **Contract test:** `test/openapi.test.js` fails if a route exists in code but not in the spec (or the reverse), and checks

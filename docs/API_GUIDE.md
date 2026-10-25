@@ -54,7 +54,7 @@ No wristband, or a broken one → the server says **401**. Section 3 explains ho
 - Money is a normal number: `250.75`.
 - Up to **2 decimals**. `10.999` becomes `11`.
 - You may send `"250.75"` (as text) and it's fine. What you **get back** is always a real number.
-- The biggest amount allowed is `1000000000000` (a trillion). Above it the answer is a `400` whose message says so in words ("amount is too large: the most allowed is 1,000,000,000,000 (one trillion)") and whose `details` entry carries `max: 1000000000000`, so a screen can show the message under the right field. Set the same limit on the input (`max`, and at most 13 digits) so people cannot type past it, and send plain numbers (no commas, spaces or ₦).
+- The biggest amount allowed is `9000000000000` (nine trillion). Above it the answer is a `400` whose message says so in words ("amount is too large: the most allowed is 9,000,000,000,000 (nine trillion)") and whose `details` entry carries `max: 9000000000000`, so a screen can show the message under the right field. Set the same limit on the input (`max`, and at most 13 digits) so people cannot type past it, and send plain numbers (no commas, spaces or ₦).
 - `amount` for bills, expenses and purchases must be **at least `0.01`**.
 
 ### Dates

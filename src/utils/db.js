@@ -3,7 +3,7 @@ import logger from './logger.js';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set (see .env.example)');
 
-// pg returns NUMERIC as a string. Money is capped at 1e12 with 2 decimals, which a JS number holds exactly.
+// pg returns NUMERIC as a string. Money is capped at 9e12 with 2 decimals, which a JS number holds exactly.
 pg.types.setTypeParser(pg.types.builtins.NUMERIC, parseFloat);
 
 export const pool = new pg.Pool({

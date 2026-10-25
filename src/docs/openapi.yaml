@@ -957,7 +957,7 @@ paths:
                 otherMonthlyExpenses: { $ref: '#/components/schemas/Money' }
                 existingMonthlyDebtPayments: { $ref: '#/components/schemas/Money' }
                 monthlyPayment: { $ref: '#/components/schemas/Money' }
-                startingCashBalance: { type: number, minimum: -1000000000000, maximum: 1000000000000, default: 0, description: May be negative (overdrawn). }
+                startingCashBalance: { type: number, minimum: -9000000000000, maximum: 9000000000000, default: 0, description: May be negative (overdrawn). }
                 months: { type: integer, minimum: 1, maximum: 120, default: 6 }
       responses:
         '200':
@@ -1220,7 +1220,7 @@ components:
             properties:
               field: { type: string, example: amount }
               message: { type: string, example: amount must be greater than 0 }
-              max: { type: number, description: 'Present when a number is above its limit: the largest value allowed (1000000000000 for money).' }
+              max: { type: number, description: 'Present when a number is above its limit: the largest value allowed (9000000000000 for money).' }
               min: { type: number, description: 'Present when a number is below its limit: the smallest value allowed.' }
 
     Health:
@@ -1234,12 +1234,12 @@ components:
     Money:
       type: number
       minimum: 0
-      maximum: 1000000000000
+      maximum: 9000000000000
       example: 250.75
     PositiveMoney:
       type: number
       minimum: 0.01
-      maximum: 1000000000000
+      maximum: 9000000000000
       example: 99.99
 
     RegisterInput:

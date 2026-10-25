@@ -3,11 +3,13 @@ import Joi from 'joi';
 // Numeric strings like "100" are accepted; booleans, arrays, null and "" are rejected.
 // precision(2) rounds to cents, matching the NUMERIC(15,2) columns. Rounding first means
 // 0.004 becomes 0 and is rejected here instead of violating a database CHECK later.
-// The most any money field may hold: one trillion. Above it the amounts stop being safe to store and add up exactly.
+// The most any money field may hold: nine trillion. The database columns (NUMERIC(15,2)) hold up to 9,999,999,999,999.99,
+// and up to here an amount in cents is still a whole number a JavaScript number holds exactly.
 // The message says the limit in words, and the 400 also carries it as a number (details[].max) so a screen can show it.
-const TOO_LARGE = { 'number.max': '{#label} is too large: the most allowed is 1,000,000,000,000 (one trillion)' };
-const money = Joi.number().precision(2).min(0).max(1e12).messages(TOO_LARGE);
-const positiveMoney = Joi.number().precision(2).min(0.01).max(1e12).messages(TOO_LARGE);
+const TOO_LARGE = { 'number.max': '{#label} is too large: the most allowed is 9,000,000,000,000 (nine trillion)' };
+export const MAX_MONEY = 9e12;
+const money = Joi.number().precision(2).min(0).max(MAX_MONEY).messages(TOO_LARGE);
+const positiveMoney = Joi.number().precision(2).min(0.01).max(MAX_MONEY).messages(TOO_LARGE);
 
 // Postgres cannot store NUL characters in text; reject them here instead of failing with a 500.
 const text = (max) =>
@@ -217,7 +219,7 @@ export const cashFlow = Joi.object({
   monthlyGrossIncome: money.required(),
   otherMonthlyExpenses: money.default(0),
   existingMonthlyDebtPayments: money.default(0),
-  startingCashBalance: Joi.number().min(-1e12).max(1e12).default(0), // may start overdrawn
+  startingCashBalance: Joi.number().min(-MAX_MONEY).max(MAX_MONEY).default(0), // may start overdrawn
   monthlyPayment: money.default(0),
   months: Joi.number().integer().min(1).max(120).default(6),
 });
