@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { startApp } from './helpers.js';
 import { userWithHistory } from './forecast-fixtures.js';
 
-delete process.env.ANTHROPIC_API_KEY;
+delete process.env.OLLAMA_MODEL;
 
 let app;
 let query;
@@ -29,7 +29,7 @@ function fakeModel(script) {
   return calls;
 }
 
-test('without an AI key on the server it answers 503, not a crash', async () => {
+test('without an Ollama model configured on the server it answers 503, not a crash', async () => {
   const res = await ask('Can I afford 500?');
   assert.equal(res.status, 503);
   assert.match(res.body.error, /not set up/);

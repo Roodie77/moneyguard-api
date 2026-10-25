@@ -9,7 +9,7 @@ import { percent } from './forecast.js';
 import logger from '../utils/logger.js';
 
 const MAX_ROUNDS = 3;
-const TIMEOUT_MS = 20_000;
+const TIMEOUT_MS = 60_000; // a local model can be slow, especially on its first call
 
 const SYSTEM_PROMPT = `You are the MoneyGuard assistant. You help one person decide about spending their own money.
 Rules you must always follow:
@@ -35,23 +35,63 @@ const TOOLS = [
   },
 ];
 
+// Ollama (https://ollama.com) runs the model, on your own machine or server (or Ollama's cloud). The assistant keeps its
+// conversation in one neutral shape (text, tool_use and tool_result blocks); these two functions translate to and from
+// Ollama's /api/chat format, so the rest of this file does not care which model server is behind it.
+export function toOllamaRequest({ system, messages, tools }) {
+  const toolNames = new Map(); // tool_use id -> tool name, so a result can say which tool it answers
+  const out = [{ role: 'system', content: system }];
+  for (const m of messages) {
+    if (typeof m.content === 'string') {
+      out.push({ role: m.role, content: m.content });
+    } else if (m.role === 'assistant') {
+      const calls = m.content.filter((b) => b.type === 'tool_use');
+      calls.forEach((c) => toolNames.set(c.id, c.name));
+      out.push({
+        role: 'assistant',
+        content: m.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n'),
+        ...(calls.length && { tool_calls: calls.map((c) => ({ function: { name: c.name, arguments: c.input ?? {} } })) }),
+      });
+    } else {
+      for (const b of m.content) if (b.type === 'tool_result') out.push({ role: 'tool', tool_name: toolNames.get(b.tool_use_id), content: b.content });
+    }
+  }
+  return { messages: out, tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) };
+}
+
+export function fromOllamaResponse(body) {
+  const message = body?.message ?? {};
+  const content = [];
+  if (typeof message.content === 'string' && message.content.trim()) content.push({ type: 'text', text: message.content });
+  (message.tool_calls ?? []).forEach((call, i) => {
+    let input = call.function?.arguments ?? {};
+    if (typeof input === 'string') {
+      try { input = JSON.parse(input); } catch { input = {}; }
+    }
+    content.push({ type: 'tool_use', id: `call_${i}`, name: call.function?.name, input });
+  });
+  return { content };
+}
+
 // The only call to the model, behind a small object so tests can swap in a fake (setAiDriver).
-const anthropicDriver = {
-  async complete({ system, messages, tools }) {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+const ollamaDriver = {
+  async complete(args) {
+    const base = (process.env.OLLAMA_BASE_URL || 'http://localhost:11434').replace(/\/+$/, '');
+    const res = await fetch(`${base}/api/chat`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5', max_tokens: 500, system, messages, tools }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: { 'content-type': 'application/json', ...(process.env.OLLAMA_API_KEY && { authorization: `Bearer ${process.env.OLLAMA_API_KEY}` }) },
+      // Temperature 0: the same question gets the same answer as far as the model allows.
+      body: JSON.stringify({ model: process.env.OLLAMA_MODEL, stream: false, options: { temperature: 0 }, ...toOllamaRequest(args) }),
+      signal: AbortSignal.timeout(Number(process.env.OLLAMA_TIMEOUT_MS) || TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Anthropic API answered ${res.status}`);
-    return res.json();
+    if (!res.ok) throw new Error(`Ollama answered ${res.status}`);
+    return fromOllamaResponse(await res.json());
   },
 };
 
-let driver = anthropicDriver;
-export const setAiDriver = (replacement) => { driver = replacement ?? anthropicDriver; }; // null puts the real one back
-export const aiConfigured = () => driver !== anthropicDriver || Boolean(process.env.ANTHROPIC_API_KEY);
+let driver = ollamaDriver;
+export const setAiDriver = (replacement) => { driver = replacement ?? ollamaDriver; }; // null puts the real one back
+export const aiConfigured = () => driver !== ollamaDriver || Boolean(process.env.OLLAMA_MODEL);
 
 export class AssistantUnavailable extends Error {}
 

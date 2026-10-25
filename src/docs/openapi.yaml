@@ -876,8 +876,8 @@ paths:
         itself. Every number in its reply is checked against the forecast results and the user's own message: if the reply
         contains any other number it is discarded and replaced by the forecast's own summary
         (`replacedUnverifiedReply: true`). `facts` holds what the forecast returned, so the app can show the raw numbers
-        too. Only the message and the forecast numbers go to the AI service, never the name, email or password.
-        Answers **503** when the server has no `ANTHROPIC_API_KEY`, and **502** when the AI service is down. Limited to
+        too. Only the message and the forecast numbers go to the Ollama server, never the name, email or password.
+        Answers **503** when the server has no `OLLAMA_MODEL` set, and **502** when the Ollama server is unreachable or fails. Limited to
         10 calls a minute.
       security: [{ bearerAuth: [] }]
       parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]

@@ -62,7 +62,7 @@ Order matters: the idempotency middleware runs before auth, which is why its cac
 | Files | `GET /uploads/:filename` | no | global | public, unguessable name |
 | Dashboard | `GET /api/dashboard` | yes | read | balance, safe-to-spend, 5 latest expenses, unread alert count |
 | Calculators | `POST /api/can-i-afford` | yes | calc | records an `affordability_checks` row |
-| Calculators | `POST /api/assistant` | yes | ai (10/min) | AI assistant over the forecast; 503 without `ANTHROPIC_API_KEY`, 502 if the AI service fails |
+| Calculators | `POST /api/assistant` | yes | ai (10/min) | AI assistant over the forecast; 503 without `OLLAMA_MODEL`, 502 if the Ollama server fails |
 | Calculators | `POST /api/forecast` | yes | calc | survival forecast (Monte Carlo); read-only, writes nothing |
 | Calculators | `POST /api/projected-balance`, `/cash-flow`, `/affordability` | yes | calc | pure maths, no database access |
 
@@ -254,11 +254,11 @@ Tests: `forecast-engine` checks the maths against hand-worked answers (a log-nor
 
 `services/assistant.js`. The rule is **the model talks, the code calculates**: language models make confident arithmetic mistakes, are not repeatable and cannot be unit-tested, so none of the maths is left to one.
 
-1. The model (Anthropic Messages API through plain `fetch`; model from `ANTHROPIC_MODEL`, default `claude-haiku-5-5`) gets the user's question, a system prompt with the rules, and one tool, `forecast`. Up to 3 rounds: it calls the tool, `forecastFor()` runs the engine, the result goes back to it, it writes the answer.
+1. The model (run by Ollama, called with plain `fetch` on `/api/chat`; `OLLAMA_MODEL` must support tool calling; `OLLAMA_BASE_URL` defaults to localhost; temperature 0) gets the user's question, a system prompt with the rules, and one tool, `forecast`. Up to 3 rounds: it calls the tool, `forecastFor()` runs the engine, the result goes back to it, it writes the answer.
 2. **The tool result is the only source of numbers.** It contains the percentages already rounded for quoting, the largest safe purchase, the verdict, and the engine's own plain-language `summary`.
 3. **The answer is checked** (`unverifiedNumbers`): every number in the reply must be in the tool results or in the user's own message (within rounding). If not, the reply is discarded and replaced with the engine's summary, and `replacedUnverifiedReply` is `true`. If the model never produced an answer, a fixed fallback is used.
 4. **Privacy:** only the question and the forecast numbers leave the server; the model never sees the name, email, password hash or raw transactions. The only tool is read-only and works on the caller's own data, so an instruction hidden in a message cannot reach anyone else's data or change anything.
-5. **Cost and failure:** a stricter limiter (10/min); 20 s timeout; any upstream failure becomes a 502 with a generic message (details only in the log); no key means 503. The driver sits behind `setAiDriver`, so the tests use a fake model and need no key or network.
+5. **Cost and failure:** a stricter limiter (10/min); 60 s timeout (local models are slow); any upstream failure becomes a 502 with a generic message (details only in the log); no `OLLAMA_MODEL` means 503. The conversation is kept in one neutral shape and `toOllamaRequest` / `fromOllamaResponse` translate it, so another model server only needs two new functions. The driver sits behind `setAiDriver`, so the tests use a fake model and need no model server or network.
 
 ### Housekeeping
 

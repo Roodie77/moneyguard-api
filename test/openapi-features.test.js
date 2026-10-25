@@ -62,8 +62,8 @@ test('contract: assistant', async () => {
   const call = (message) => app.api('POST', '/api/assistant', { token: fresh.token, body: { message } });
   const tool = { type: 'tool_use', id: 'c1', name: 'forecast', input: { amount: 100 } };
 
-  delete process.env.ANTHROPIC_API_KEY;
-  setAiDriver(null); // back to the real driver, which has no key here
+  delete process.env.OLLAMA_MODEL;
+  setAiDriver(null); // back to the real driver, which has no model configured here
   assertContract(await call('hi'), '/api/assistant', 'post'); // 503
   let round = 0;
   setAiDriver({ async complete() { return round++ === 0 ? { stop_reason: 'tool_use', content: [tool] } : { stop_reason: 'end_turn', content: [{ type: 'text', text: 'That looks fine.' }] }; } });

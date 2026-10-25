@@ -77,8 +77,10 @@ Set in `.env` locally, as real environment variables in production.
 | `CORS_ORIGINS` | no | Websites allowed to call the API from a browser, separated by commas. Defaults to the placeholder `https://frontend-placeholder.example.com` until the frontend is ready. |
 
 | `CLOUDINARY_URL` | no | Turns on Cloudinary storage for uploads: `cloudinary://API_KEY:API_SECRET@CLOUD_NAME`, copied from your Cloudinary dashboard. Keep it secret. Empty means files stay on the server's disk. |
-| `ANTHROPIC_API_KEY` | no | Turns on the AI assistant (`POST /api/assistant`). Without it that endpoint answers 503 and everything else works. Keep it secret. Only the user's question and the forecast numbers are sent, never names, emails or passwords. |
-| `ANTHROPIC_MODEL` | no | Which model the assistant uses. Default `claude-haiku-5-5`. |
+| `OLLAMA_MODEL` | no | Turns on the AI assistant (`POST /api/assistant`): the name of an [Ollama](https://ollama.com) model that supports tool calling, such as `llama3.1`. Without it that endpoint answers 503 and everything else works. Only the user's question and the forecast numbers are sent to Ollama, never names, emails or passwords. |
+| `OLLAMA_BASE_URL` | no | Where Ollama runs. Default `http://localhost:11434`. On a hosted API it must be a server the API can reach (a VPS or Ollama's cloud), not your own laptop. |
+| `OLLAMA_API_KEY` | no | Only if that Ollama server needs a key (Ollama's cloud or a protected server). Keep it secret. |
+| `OLLAMA_TIMEOUT_MS` | no | How long to wait for the model. Default 60000. |
 | `CLOUDINARY_FOLDER` | no | Top-level Cloudinary folder. Default `moneyguard`; each user's files go in `<folder>/<userId>`. |
 | `UPLOADS_DIR` | no | Where uploaded files are kept when Cloudinary is not used. Default `src/uploads`. Point it at a mounted disk that survives deploys. (The tests give each test its own folder with it.) |
 
