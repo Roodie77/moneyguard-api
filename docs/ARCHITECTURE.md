@@ -47,6 +47,8 @@ Order matters: the idempotency middleware runs before auth, which is why its cac
 | Profile | `PUT /api/savings-goal` | yes | write | |
 | Profile | `PUT /api/me` | yes | auth | edit name, phone, email (email needs the current password); wrong passwords count towards the failed-attempts limit |
 | Profile | `PUT /api/me/password` | yes | auth | needs the current password; ends every other session and returns a fresh one for this device |
+| Profile | `DELETE /api/me` | yes | auth | schedules deletion 24 hours ahead (202, `pending_deletion`); needs the current password |
+| Profile | `POST /api/me/cancel-deletion` | yes | write | cancels a pending deletion; idempotent |
 | Profile | `PUT`, `DELETE /api/me/avatar` | yes | write | profile picture (image, max 5 MB) kept on Cloudinary or on disk; the old one is deleted |
 | Profile | `GET`, `PUT /api/financial-profile` | yes | read / write | the numbers typed into the calculators, saved per user (partial saves; defaults when nothing is saved) |
 | Bills | `GET/POST /api/bills`, `PUT`, `DELETE /api/bills/:id` | yes | read / write | PUT edits only the fields sent; `dueDate: null` clears it |
@@ -179,6 +181,7 @@ Deleting a user removes all of their rows.
 | `avatar_url` | text | nullable (006); the picture to show: a Cloudinary https link, or `/uploads/<name>` for a file on disk |
 | `avatar_public_id` | text | nullable (006); the Cloudinary id, used to delete the old picture; never returned by the API |
 | `name` | text | nullable (007); the display name, optional at sign-up and editable |
+| `deletion_requested_at`, `deletes_at` | timestamptz | nullable (008); both set while the account is pending deletion, both null when active (a CHECK keeps them together). `deletes_at` is 24 hours after the request. Partial index on `deletes_at` |
 
 **`bills`**: `id`, `user_id`, `name` text, `amount` numeric(15,2) `CHECK (> 0)`, `due_date` timestamptz (nullable),
 `created_at`. Index `bills_user_idx (user_id)`.
@@ -341,6 +344,21 @@ no floating-point drift.
 **Analytics** is plain SQL aggregation over `expenses` for a range of UTC days (default last 30, at most 731), grouped by
 `lower(category)` and by UTC day or month. Spending is not income-aware: it only covers recorded expenses.
 
+### Account deletion
+
+`DELETE /api/me` does not delete: `requestDeletion` sets `deletion_requested_at = now()` and `deletes_at = now() + 24h` (`COALESCE`, so asking again never moves the deadline) and the answer is a 202 with `accountStatus: pending_deletion`. The account keeps working; `publicUser()` adds `accountStatus` to every user object and `deletionInfo()` builds the notice (`requestedAt`, `deletesAt`, `message`) returned as `accountDeletion` by login, register and the dashboard. `POST /api/me/cancel-deletion` clears both columns.
+
+Permanent deletion (`services/account.js`):
+
+1. **`purgeAccount(id)`** runs in one transaction: `SELECT ... WHERE deletes_at <= now() FOR UPDATE` (so a cancel and a delete can never both win), then inserts the user's files and avatar into `storage_cleanup`, then `DELETE FROM users`. Every other table references `users(id) ON DELETE CASCADE`, so bills, expenses, files, alerts, rules, tokens, affordability checks, reset tokens and the financial profile go with it.
+2. **`storage_cleanup`** (008) holds one row per uploaded file (Cloudinary `public_id` + `resource_type`, or the `local_name` on disk). It exists because the files are outside the database: they are queued in the same transaction as the account deletion, so they are never forgotten. `processStorageCleanup()` deletes them one by one (`storage.deleteAsset`, which throws on failure), removes the row on success, and on failure increments `attempts` and tries again on the next sweep, giving up (and logging an error) after 10 tries.
+3. **`sweepDeletedAccounts()`** purges up to 100 due accounts and then runs the cleanup. `server.js` calls it once at start-up (anything that came due while the server was off or asleep) and every minute (`setInterval(...).unref()`). It is safe to run from several servers at once.
+4. **Lazy enforcement:** the `/api` user loader and `/api/auth/login` check `isDue(user)` and call `purgeAccount` first, so an account past its deadline is refused (`401 Account not found`) immediately, even before the sweep runs. A cancel that arrives after the deadline therefore finds no account.
+
+A wrong password on `DELETE /api/me` is a 400 naming `currentPassword` (never a 401) and shares the failed-attempts limiter with login.
+
+**Limits to know:** the deletion happens inside the app process, so on a host that sleeps the process (Render's free plan) the data is removed when the server next starts; backups kept by the database host are not touched; during the grace period the account is fully usable and `/uploads` files remain reachable by link.
+
 ### Known gaps (read before launch)
 
 1. **Reset emails and alert notifications are not sent** (see above and the alerts section). Alerts are pull-only for now.
@@ -355,8 +373,7 @@ no floating-point drift.
    token only.
 6. **HTTPS is not terminated by the app.** Put it behind a TLS-terminating proxy and set `TRUST_PROXY` correctly. Tokens
    travel in headers and bodies, so plain HTTP is not acceptable in production.
-7. **No account deletion endpoint yet.** Name, phone, email and password can be edited (`PUT /api/me`, `PUT /api/me/password`).
-   A wrong current password there is a 400 naming `currentPassword` (never a 401, which clients read as an expired token).
+7. **Account deletion runs inside the server process** (see "Account deletion" above): on a sleeping host it happens at the next wake-up, and host-level backups are out of the app's control. Name, phone, email, password and deletion all take the current password; a wrong one is a 400 naming `currentPassword` (never a 401, which clients read as an expired token).
 8. **Idempotency caches responses verbatim**, including tokens from login/register if a client sends the header there.
    Clients are told not to; the server does not enforce it.
 

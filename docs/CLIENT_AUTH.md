@@ -105,4 +105,6 @@ Two browser tabs refreshing at the same moment can also collide. If that matters
 
 **After changing the password** (`PUT /api/me/password`) the answer is a **new session** for this device, and every other login is ended. Replace the stored refresh token and the in-memory access token with it right away. Skipping this logs the user out on the next request, which looks like "it logged me out when I changed my password".
 
+**Account deletion (24-hour grace period).** `DELETE /api/me` does not log the user out and does not delete anything yet: the session keeps working so the user can see the pending notice and cancel. Show a banner from `accountStatus` / `accountDeletion` (on `GET /api/me`, the dashboard and the login answer). When the deadline passes, the account is deleted: the next request gets `401 Account not found`, the refresh call also gets 401, and the helper reports `SessionError('signed-out')`, which sends the user to the login screen (where the old email now answers 401, or can be registered again as a new account).
+
 **Trade-off to know:** anything in `localStorage` can be read by a script injected into the page (XSS), so keep the app free of untrusted HTML. A mobile app should use the Keychain or Keystore instead, as described above.

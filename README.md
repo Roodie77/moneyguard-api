@@ -27,6 +27,7 @@ Node 20+, Express, PostgreSQL, JWT auth. Optional Redis for rate limits shared a
 - **Safe to spend:** a daily figure worked out from the balance, upcoming bills, the savings goal and the days until the next income (`GET /api/dashboard`).
 - **Analytics:** totals, average per day, spending per category and a per-day or per-month series for any range of up to 731 days.
 - **Alerts:** rules the user sets themselves (low balance, daily limit, monthly limit, category budget, bill due soon, over today's safe-to-spend). Alerts are listed, marked read, and kept for 90 days.
+- **Account deletion with a grace period:** `DELETE /api/me` (with the password) does not delete at once: it schedules deletion for **24 hours later** and says so (`accountStatus: pending_deletion`, `deletesAt`, a message to show). The account keeps working and can be cancelled. After the day the server deletes the profile, all its data and its uploaded files for good, automatically.
 - **Calculators:** "can I afford this?", projected balance after a new EMI, month-by-month cash flow, and loan affordability.
 - **Media uploads:** upload and list receipts, photos, PDFs and videos (up to 20 MB). They are kept on Cloudinary when `CLOUDINARY_URL` is set (so they survive redeploys), otherwise on the server's disk. Every file comes back with a `url` to open it.
 - **Safety and reliability:** input validation on every write, per-IP rate limits, idempotency keys for safe retries, request ids in every response and log line, and a `/health` check. See [How it behaves](#how-it-behaves).
@@ -77,6 +78,7 @@ Set in `.env` locally, as real environment variables in production.
 
 | `CLOUDINARY_URL` | no | Turns on Cloudinary storage for uploads: `cloudinary://API_KEY:API_SECRET@CLOUD_NAME`, copied from your Cloudinary dashboard. Keep it secret. Empty means files stay on the server's disk. |
 | `CLOUDINARY_FOLDER` | no | Top-level Cloudinary folder. Default `moneyguard`; each user's files go in `<folder>/<userId>`. |
+| `UPLOADS_DIR` | no | Where uploaded files are kept when Cloudinary is not used. Default `src/uploads`. Point it at a mounted disk that survives deploys. (The tests give each test its own folder with it.) |
 
 **Setting the frontend origin (CORS):** the API only accepts browser requests from the origins listed in `CORS_ORIGINS`. Until the frontend exists this is a placeholder, so every real website is blocked. To allow the real frontend, put its address in `CORS_ORIGINS` in your `.env` file when running locally, or in your host's environment variables in production (on Render, the service's *Environment* tab), then restart the server. Write the full address with `https://` and no trailing slash, and separate several addresses with commas. Mobile apps, Postman and curl are not affected by CORS.
 
@@ -106,6 +108,8 @@ The interactive reference is at `/docs` (Swagger UI) and the contract is [`src/d
 | Profile | `GET /api/me` | Yes | The signed-in user |
 | Profile | `PUT /api/me` | Yes | Edit name, phone or email (changing the email needs the current password) |
 | Profile | `PUT /api/me/password` | Yes | Change the password (needs the current password). Ends every other login and returns a fresh session for this device |
+| Profile | `DELETE /api/me` | Yes | Delete the account **after a 24-hour grace period** (needs the current password). Answers 202 "pending" with the deadline |
+| Profile | `POST /api/me/cancel-deletion` | Yes | Cancel a pending deletion during the grace period |
 | Profile | `PUT /api/balance` | Yes | Set the current balance |
 | Profile | `PUT /api/next-income` | Yes | Set the next expected income and date |
 | Profile | `PUT /api/savings-goal` | Yes | Set a savings goal and deadline |
@@ -510,7 +514,7 @@ POST {{baseUrl}}/api/auth/logout
 ### Profile
 
 <details>
-<summary>Show 14 examples</summary>
+<summary>Show 17 examples</summary>
 
 #### P1. Call a protected endpoint without a token
 
@@ -884,6 +888,90 @@ PUT {{baseUrl}}/api/me/password
 ```
 
 > **Replace the stored tokens with these.** The password change ends every other login (all refresh tokens and older access tokens), including the one used for this request, so the old tokens stop working. The new password follows the usual rules (8 characters or more, at most 72 bytes) and must differ from the current one.
+
+#### P15. Delete my account: wrong password
+
+```http
+DELETE {{baseUrl}}/api/me
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "currentPassword": "WrongPass999"
+}
+```
+
+**Response: `400 Bad Request`**
+
+```json
+{
+  "error": "Validation failed",
+  "details": [
+    {
+      "field": "currentPassword",
+      "message": "Current password is incorrect"
+    }
+  ]
+}
+```
+
+> The password goes in the JSON body (fetch, axios `{ data }` and Thunder Client all support a body on DELETE). A wrong password is a **400, not a 401**, and counts towards the limit of 8 failed attempts per 15 minutes.
+
+#### P16. Delete my account (pending for 24 hours)
+
+```http
+DELETE {{baseUrl}}/api/me
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}` · `Content-Type: application/json`
+
+**Body (raw JSON)**
+
+```json
+{
+  "currentPassword": "StrongPass123"
+}
+```
+
+**Response: `202 Accepted`**
+
+```json
+{
+  "accountStatus": "pending_deletion",
+  "graceHours": 24,
+  "requestedAt": "2026-10-25T14:04:40.795Z",
+  "deletesAt": "2026-10-26T14:04:40.795Z",
+  "message": "This account is scheduled for permanent deletion at 2026-10-26T14:04:40.795Z (UTC). Until then you can cancel and nothing is lost. After that, your profile and all your data are removed and cannot be recovered."
+}
+```
+
+> **Nothing is deleted yet.** The account keeps working for 24 hours. While pending, `GET /api/me` returns `"accountStatus": "pending_deletion"` with `deletionRequestedAt` and `deletesAt`, `GET /api/dashboard` returns `accountDeletion` (`requestedAt`, `deletesAt`, `message`, or `null` when active), and the login and register answers carry the same `accountDeletion` notice, so every screen can show a banner. Asking again does not move the deadline. When the day is over the profile, all its data and its uploaded files are deleted permanently and automatically; after that the old token gets `401 Account not found` and the email can be registered again.
+
+#### P17. Cancel the deletion
+
+```http
+POST {{baseUrl}}/api/me/cancel-deletion
+```
+
+**Headers / body type:** `Authorization: Bearer {{token}}`
+
+**Response: `200 OK`**
+
+```json
+{
+  "accountStatus": "active",
+  "requestedAt": null,
+  "deletesAt": null,
+  "message": "Account deletion cancelled. Your account and all your data are unchanged.",
+  "user": { "id": "9d8dcef0-7f2b-460f-b3fa-115770f23a74", "email": "jonathan@example.com", "accountStatus": "active", "deletesAt": null, "...": "the rest of the user" }
+}
+```
+
+> Safe to repeat. Nothing is lost by cancelling. Once the 24 hours are over the account is already gone and this answers `401`.
 
 </details>
 
@@ -2180,7 +2268,7 @@ Most tests start the real app on a random port and call it over HTTP, like Postm
 | Files | What they cover |
 |---|---|
 | `auth`, `tokens`, `edge-auth`, `edge-auth-limits` | Register, login, wrong passwords, refresh tokens (single use, reuse detection, expiry), logout, password reset, and the rate limits on those endpoints |
-| `profile`, `financial-profile`, `logout-keeps-data`, `avatar`, `avatar-cloud`, `account-edit`, `account-edit-limits`, `bills`, `bills-edit`, `uploads`, `cloud-storage` | Balance, income and savings-goal updates, the profile picture (set, replace, remove, type and size limits, on disk and on Cloudinary), the saved calculator numbers (defaults, partial saves, validation, privacy, and that they and all other data survive logout and login), bills, file upload rules (allowed types, size limit, safe file names), and uploads to Cloudinary (tested with a fake Cloudinary, so no account is needed): the returned link, per-user folders, no copy left on disk, and the uploaded copy removed again if the database record cannot be saved |
+| `profile`, `financial-profile`, `logout-keeps-data`, `avatar`, `avatar-cloud`, `account-edit`, `account-edit-limits`, `account-deletion`, `account-deletion-cloud`, `account-deletion-limits`, `bills`, `bills-edit`, `uploads`, `cloud-storage` | Balance, income and savings-goal updates, the profile picture (set, replace, remove, type and size limits, on disk and on Cloudinary), the saved calculator numbers (defaults, partial saves, validation, privacy, and that they and all other data survive logout and login), bills, file upload rules (allowed types, size limit, safe file names), and uploads to Cloudinary (tested with a fake Cloudinary, so no account is needed): the returned link, per-user folders, no copy left on disk, and the uploaded copy removed again if the database record cannot be saved |
 | `expenses`, `expenses-manage`, `expenses-race`, `overspend`, `edge-money` | Recording, filtering, paging, editing and deleting expenses, exact money maths, and that simultaneous requests can never overspend the balance |
 | `analytics` | Summary totals, per-category percentages, day and month grouping in UTC |
 | `alert-rules`, `alert-rules-validation`, `alert-engine`, `alerts-flow` | Setting thresholds, what each of the six rule types fires on, firing once per period, notifications, marking alerts read |
@@ -2226,6 +2314,7 @@ test/                node:test suites + run.js (starts the test database); see T
 - **Transactions:** `GET /api/expenses` filters by day range, category and amount and is paged (`limit`, `offset`, `X-Total-Count`). Expenses can be edited (`PUT`) and deleted (`DELETE`); both move the balance atomically (a delete refunds it, a raise above the balance is a `422`).
 - **Analytics:** `GET /api/analytics/summary` gives totals, an average per day, spending per category and a per-day or per-month series for a range of UTC days.
 - **Alerts:** users set their own thresholds (`PUT /api/alert-rules`): low balance, daily limit, monthly limit, category budget, bill due soon, over today's safe-to-spend. There are no default rules. Rules are checked after every change that affects them and when the list is read; each fires once per day, month or bill. `GET /api/alerts` lists them (kept 90 days). **Nothing is pushed yet**: plug a sender into `src/services/notifier.js`.
+- **Deleting an account:** the user asks with their password and gets 24 hours to change their mind. The answer, `GET /api/me`, the dashboard and login all say it is pending and when it will be deleted. Cancelling is one call. When the day is over a check (at server start and every minute) deletes the profile and every row of theirs, and the uploaded files (Cloudinary or disk) are queued in the same transaction and removed, retried if the storage is briefly unreachable. An account past its deadline is refused at once even before that check runs.
 - **Idempotency:** send an `Idempotency-Key` header on POST/PUT/DELETE; a retry within 5 minutes returns the first result instead of repeating the action. Do not send it on login, register or refresh, because the cached answer would contain tokens.
 - **Rate limits (per IP):** 8 failed login, sign-up, refresh or reset attempts per 15 min, 8 password-reset requests per 15 min, 30 writes / 20 calculations / 60 reads per minute, 300 requests per 15 min overall. `/health` is exempt. A `429` response means wait and retry.
 - **Files:** JPEG, PNG, WebP, GIF, PDF, MP4, MOV and WebM up to 20 MB. With `CLOUDINARY_URL` set they are uploaded to Cloudinary and returned as an `https://res.cloudinary.com/...` link; otherwise they are saved on disk under a random name (the extension comes from the file type, never from the client's file name) and returned as `/uploads/<name>`. If saving the database record fails after the upload, the uploaded copy is removed again.
@@ -2260,10 +2349,10 @@ Throughput scales with more instances behind a load balancer plus `REDIS_URL`; t
 
 ## Migrations
 
-Add a new file `src/db/migrations/008_what_it_does.sql` and run `npm run migrate`. Files run once, in name order,
+Add a new file `src/db/migrations/009_what_it_does.sql` and run `npm run migrate`. Files run once, in name order,
 each in its own transaction. Never edit a migration that has already been applied; add a new one.
 
-The project has seven so far (001 initial tables, 002 refresh and reset tokens, 003 alerts and analytics, 004 Cloudinary file links, 005 saved calculator numbers, 006 profile picture, 007 user name).
+The project has eight so far (001 initial tables, 002 refresh and reset tokens, 003 alerts and analytics, 004 Cloudinary file links, 005 saved calculator numbers, 006 profile picture, 007 user name, 008 account deletion).
 **Run `npm run migrate` after every `git pull` that brings a new migration file**, and on every deploy (the Render start command does it for you). Skipping it makes the new code fail with errors such as `relation "..." does not exist` or `column "..." does not exist`.
 
 ## Deploying to Render
@@ -2311,6 +2400,7 @@ Create a **Web Service** from the GitHub repo using the **Node** runtime (Node 2
 - **CORS allows only a placeholder origin for now.** Browsers can call the API only from the origins in `CORS_ORIGINS`. Set the real frontend address there before launch.
 - **Password-reset emails need a provider.** The reset flow works end to end, but `src/services/mailer.js` only logs the token (outside production) until you connect an email service.
 - **No notifications are delivered.** Alerts appear when the app asks for them (`GET /api/alerts` or the dashboard's `unreadAlerts`). Push or email needs a sender in `src/services/notifier.js`.
-- **There is no endpoint to delete an account yet.** Only expenses are recorded as transactions, not income.
+- **Permanent deletion is done by the server itself** (a check at start-up and every minute). On a free Render plan that sleeps when idle, the data is removed when the server next wakes up. The account is unusable the moment the day is over either way. Backups kept by the database host are outside this app's control.
+- **Only expenses are recorded as transactions, not income.**
 - **HTTPS is not done by the app.** Render (or your proxy) must terminate it. Helmet sends the HTTPS-only header, but the app itself speaks plain HTTP.
 - **Access tokens last 1 hour** and cannot be revoked individually: logout ends the refresh token, and a password reset invalidates earlier access tokens, but a stolen access token otherwise works until it expires.

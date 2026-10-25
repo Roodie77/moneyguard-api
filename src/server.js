@@ -5,6 +5,7 @@ import { closeRedis } from './utils/redis.js';
 import { connectDb, closeDb } from './utils/db.js';
 import { purgeExpiredTokens } from './services/tokens.js';
 import { purgeOldAlerts } from './services/alerts.js';
+import { sweepDeletedAccounts } from './services/account.js';
 
 const PORT = process.env.PORT || 3000;
 
@@ -21,6 +22,12 @@ const purge = setInterval(() => {
   Promise.all([purgeExpiredTokens(), purgeOldAlerts()]).catch((err) => logger.warn(`Cleanup failed: ${err.message}`));
 }, 3_600_000);
 purge.unref();
+
+// Accounts whose one-day grace period is over are deleted for good: once now (anything that came due while the server was
+// off or asleep) and then every minute. An account past its deadline is refused at once even before this runs.
+const sweep = () => sweepDeletedAccounts().catch((err) => logger.warn(`Account deletion sweep failed: ${err.message}`));
+sweep();
+setInterval(sweep, 60_000).unref();
 
 const server = app.listen(PORT, () => {
   logger.info(`MoneyGuard running on port ${PORT}`);

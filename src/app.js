@@ -12,6 +12,7 @@ import { requestLogger } from './middleware/requestLogger.js';
 import { isRedisAvailable } from './utils/redis.js';
 import { pingDb } from './utils/db.js';
 import logger from './utils/logger.js';
+import { uploadsDir } from './utils/uploadsDir.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -85,7 +86,7 @@ app.use(express.json({ limit: '10kb' }));
 app.use(globalLimiter);
 app.use(idempotency);
 
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+app.use('/uploads', express.static(uploadsDir(), {
   setHeaders: (res) => res.setHeader('X-Content-Type-Options', 'nosniff'),
 }));
 

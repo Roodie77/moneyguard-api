@@ -15,6 +15,7 @@ import {
 } from '../services/tokens.js';
 import { sendPasswordReset } from '../services/mailer.js';
 import logger from '../utils/logger.js';
+import { publicUser, deletionInfo, isDue, purgeAccount } from '../services/account.js';
 
 const router = express.Router();
 
@@ -28,7 +29,8 @@ async function session(user) {
     token: signToken(user.id),
     expiresIn: ACCESS_TOKEN_SECONDS,
     refreshToken: await issueRefreshToken(user.id),
-    user: sanitize(user),
+    user: publicUser(user),
+    accountDeletion: deletionInfo(user), // null, or the pending-deletion notice to show straight after login
   };
 }
 
@@ -52,7 +54,8 @@ router.post('/register', authLimiter, validate(schemas.register), h(async (req, 
 
 router.post('/login', authLimiter, validate(schemas.login), h(async (req, res) => {
   const { email, password } = req.body;
-  const [user] = await query('SELECT * FROM users WHERE email = $1', [email]);
+  let [user] = await query('SELECT * FROM users WHERE email = $1', [email]);
+  if (user && isDue(user) && await purgeAccount(user.id)) user = undefined; // the grace period is over: the account is gone
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
@@ -98,10 +101,5 @@ router.post('/reset-password', authLimiter, validate(schemas.resetPassword), h(a
   }
   res.json({ ok: true });
 }));
-
-function sanitize(user) {
-  const { passwordHash, passwordChangedAt, avatarPublicId, ...rest } = user;
-  return rest;
-}
 
 export default router;

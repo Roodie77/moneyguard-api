@@ -376,6 +376,46 @@ This **replaces** the number. It does not add to it. Use it when the user says "
 
 `deadline` is optional. Answer: `{ "savingsGoalAmount": 200, "savingsGoalDeadline": "..." }`.
 
+### Delete my account, with one day to change my mind `DELETE /api/me`
+
+**Like you are five:** deleting an account is like throwing a notebook in the bin. Because that cannot be undone, the helper does not bin it straight away. It puts the notebook in a box marked **"will be thrown away tomorrow"**, and **tells you clearly**. During that day you can take the notebook back out. After the day, it is thrown away for good, by itself.
+
+**What the app sends:**
+
+```js
+const res = await api.request('/api/me', { method: 'DELETE', body: { currentPassword } });
+```
+
+The password goes in the JSON body. It is needed so that a stolen login token alone cannot delete someone's account. A wrong password is a **400** naming `currentPassword` (show it under the password box), **not** a 401, and counts towards the limit of 8 failed attempts per 15 minutes.
+
+**What comes back (202, "accepted"):**
+
+```json
+{
+  "accountStatus": "pending_deletion",
+  "graceHours": 24,
+  "requestedAt": "2026-10-25T14:04:40.795Z",
+  "deletesAt": "2026-10-26T14:04:40.795Z",
+  "message": "This account is scheduled for permanent deletion at ... Until then you can cancel and nothing is lost. After that, your profile and all your data are removed and cannot be recovered."
+}
+```
+
+**Nothing is deleted yet.** For the next 24 hours the account works normally. The app must make the pending state **obvious** and offer **Cancel**:
+
+| Where | How the app knows it is pending |
+|---|---|
+| `GET /api/me` | `accountStatus` is `"pending_deletion"`, with `deletionRequestedAt` and `deletesAt` (both `null` when the account is active) |
+| `GET /api/dashboard` | `accountDeletion` is `{ requestedAt, deletesAt, message }` when pending, or `null` |
+| Login and register answers | the same `accountDeletion` and `user.accountStatus`, so a banner can show straight after logging in |
+
+**What to show:** a banner at the top of every screen, for example "Your account will be permanently deleted on 26 Oct 2026 at 15:04. [Cancel deletion]", using `deletesAt` converted to the user's local time (it is UTC), or the ready-made `message`. Do not hide the pending state on screens other than settings. Replace the "Delete account" button with "Cancel deletion" while pending. Asking to delete again does **not** move the deadline.
+
+**Cancel:** `POST /api/me/cancel-deletion` (no body) answers `{ accountStatus: "active", ... }`. Nothing is lost. Safe to repeat.
+
+**When the 24 hours are over:** the server deletes the profile, **all** the data (bills, expenses, alerts, calculator numbers, tokens) and the **uploaded files and profile picture**, permanently. It happens automatically (a check runs every minute and when the server starts), and the account stops working at the exact moment the day is up. From then on the old token gets `401 Account not found`, the refresh fails with 401, so the helper reports **signed out**, and the same email can be registered again as a brand-new account. Make the confirmation dialog say this clearly before sending the request.
+
+> **Good to know:** if the server was asleep (the free plan sleeps when idle), the data is removed when it next wakes. The account is unusable from the deadline either way.
+
 ### Profile picture `PUT /api/me/avatar` and `DELETE /api/me/avatar`
 
 Upload with a **form** (not JSON): one field named **`avatar`** (not `file`), an image (JPEG, PNG, WebP or GIF), **at most 5 MB**.

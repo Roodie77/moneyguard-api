@@ -18,6 +18,7 @@ import {
 } from '../services/calculator.js';
 import { safeToSpendFor } from '../services/budget.js';
 import { issueRefreshToken } from '../services/tokens.js';
+import { publicUser, deletionInfo, isDue, requestDeletion, cancelDeletion, purgeAccount, DELETION_GRACE_HOURS } from '../services/account.js';
 import { evaluateAlerts } from '../services/alerts.js';
 import alertsRouter from './alerts.js';
 import analyticsRouter from './analytics.js';
@@ -30,6 +31,8 @@ router.use(authMiddleware);
 router.use(h(async (req, res, next) => {
   [req.user] = await query('SELECT * FROM users WHERE id = $1', [req.userId]);
   if (!req.user) return res.status(401).json({ error: 'Account not found' });
+  // The grace period is over: the account is gone even if the sweep has not removed it yet.
+  if (isDue(req.user) && await purgeAccount(req.userId)) return res.status(401).json({ error: 'Account not found' });
   // A password reset ends every session that started before it.
   if (req.user.passwordChangedAt && req.tokenIssuedAt < Math.floor(req.user.passwordChangedAt.getTime() / 1000)) {
     return res.status(401).json({ error: 'Invalid or expired token' });
@@ -44,9 +47,6 @@ const checkAlerts = (req) => evaluateAlerts(req.userId);
 
 // ---- Profile ----
 
-// The user as the API shows them: never the password hash or other internal columns.
-const publicUser = ({ passwordHash, passwordChangedAt, avatarPublicId, ...safe }) => safe;
-
 // A wrong current password is a 400 with the field named (so the app can show it under the input), not a 401:
 // a 401 means "your login token is no good" and makes apps try to refresh the session or log the user out.
 const wrongPassword = (res, field = 'currentPassword', message = 'Current password is incorrect') =>
@@ -55,6 +55,21 @@ const wrongPassword = (res, field = 'currentPassword', message = 'Current passwo
 router.get('/me', readLimiter, (req, res) => {
   res.json(publicUser(req.user));
 });
+
+// Asks for the account to be deleted. It is NOT deleted now: it is scheduled for 24 hours from now, and the answer says so.
+// Until then everything still works and the account can be cancelled. Needs the current password (a stolen login token alone
+// must not be enough). Asking again does not move the deadline. Wrong guesses count towards the failed-attempts limit.
+router.delete('/me', authLimiter, validate(schemas.deleteAccount), h(async (req, res) => {
+  if (!(await bcrypt.compare(req.body.currentPassword, req.user.passwordHash))) return wrongPassword(res);
+  const user = await requestDeletion(req.userId);
+  res.status(202).json({ accountStatus: 'pending_deletion', graceHours: DELETION_GRACE_HOURS, ...deletionInfo(user) });
+}));
+
+// Cancels a pending deletion. Safe to repeat (an account that is not pending just stays active).
+router.post('/me/cancel-deletion', writeLimiter, h(async (req, res) => {
+  const user = await cancelDeletion(req.userId);
+  res.json({ accountStatus: 'active', requestedAt: null, deletesAt: null, message: 'Account deletion cancelled. Your account and all your data are unchanged.', user: publicUser(user) });
+}));
 
 // Edit name, phone or email. Only the fields sent change. Changing the email needs the current password.
 // (authLimiter: wrong passwords here count towards the same 8-tries-per-15-minutes limit as login.)
@@ -366,6 +381,7 @@ router.get('/dashboard', readLimiter, h(async (req, res) => {
     safeToSpend,
     recentExpenses,
     unreadAlerts: unread,
+    accountDeletion: deletionInfo(req.user), // null, or the pending-deletion notice to show as a banner
   });
 }));
 

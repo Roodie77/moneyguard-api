@@ -1,10 +1,9 @@
 import multer from 'multer';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { cloudEnabled } from '../services/storage.js';
+import { uploadsDir } from '../utils/uploadsDir.js';
 
-const UPLOAD_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../uploads');
+const UPLOAD_DIR = uploadsDir();
 
 // The extension comes from the allowed type, never from the client's filename (blocks "evil.html").
 const allowed = new Map([

@@ -2,11 +2,14 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { startApp, registerUser } from './helpers.js';
 
 process.env.CLOUDINARY_URL = 'cloudinary://123456:secret@demo'; // must be set before the app is imported
-const UPLOAD_DIR = path.join(import.meta.dirname, '../src/uploads');
+// A private upload folder, so tests running at the same time do not see each other's files.
+const UPLOAD_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'moneyguard-uploads-'));
+process.env.UPLOADS_DIR = UPLOAD_DIR; // must be set before the app is imported
 
 let app;
 let user;

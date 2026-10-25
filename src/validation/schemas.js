@@ -56,6 +56,9 @@ export const profileUpdate = Joi.object({
     .messages({ 'any.required': 'currentPassword is required to change the email' }), // named, so the app can show it under that input
 }).min(1);
 
+// Deleting an account needs the password, so a stolen login token alone cannot do it.
+export const deleteAccount = Joi.object({ currentPassword: Joi.string().max(72).required() });
+
 export const changePassword = Joi.object({
   currentPassword: Joi.string().max(72).required(),
   newPassword: password.required(),

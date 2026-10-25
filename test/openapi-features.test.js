@@ -29,6 +29,22 @@ function assertContract(res, specPath, method) {
   assert.ok(validate(res.body), `${method.toUpperCase()} ${specPath} ${res.status} body does not match the spec:\n${ajv.errorsText(validate.errors)}\n${JSON.stringify(res.body)}`);
 }
 
+test('contract: account deletion', async () => {
+  const fresh = await registerUser(app.api);
+  const call = (method, p, body) => app.api(method, p, { token: fresh.token, body });
+  assertContract(await call('GET', '/api/me'), '/api/me', 'get'); // active: status "active", null dates
+  assertContract(await call('DELETE', '/api/me', { currentPassword: 'wrong-password' }), '/api/me', 'delete'); // 400
+  assertContract(await call('DELETE', '/api/me', {}), '/api/me', 'delete'); // 400
+  const pending = await call('DELETE', '/api/me', { currentPassword: 'password123' });
+  assertContract(pending, '/api/me', 'delete'); // 202
+  assert.equal(pending.status, 202);
+  assertContract(await call('GET', '/api/me'), '/api/me', 'get'); // pending_deletion with dates
+  assertContract(await call('GET', '/api/dashboard'), '/api/dashboard', 'get'); // accountDeletion filled in
+  assertContract(await app.api('POST', '/api/auth/login', { body: { email: fresh.email, password: 'password123' } }), '/api/auth/login', 'post');
+  assertContract(await call('POST', '/api/me/cancel-deletion'), '/api/me/cancel-deletion', 'post');
+  assertContract(await call('GET', '/api/dashboard'), '/api/dashboard', 'get'); // accountDeletion null again
+});
+
 test('contract: financial profile', async () => {
   const fresh = await registerUser(app.api);
   const call = (method, p, body) => app.api(method, p, { token: fresh.token, body });

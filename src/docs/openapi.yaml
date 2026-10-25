@@ -321,7 +321,74 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/me/cancel-deletion:
+    post:
+      tags: [Profile]
+      summary: Cancel a pending account deletion
+      description: |
+        Undoes a deletion that was requested with `DELETE /api/me`, as long as the 24-hour grace period has not ended. The
+        account and all its data are exactly as they were. Safe to repeat: an account that is not pending just stays active.
+        Once the grace period is over the account is already gone and this answers 401.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      responses:
+        '200':
+          description: The account is active
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accountStatus, requestedAt, deletesAt, message, user]
+                properties:
+                  accountStatus: { type: string, enum: [active] }
+                  requestedAt: { type: string, nullable: true, example: null }
+                  deletesAt: { type: string, nullable: true, example: null }
+                  message: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/me:
+    delete:
+      tags: [Profile]
+      summary: Delete my account (after a 24-hour grace period)
+      description: |
+        **The account is not deleted now.** It is scheduled to be permanently deleted **24 hours from now**, and the answer says
+        so (`accountStatus: pending_deletion` with `deletesAt` and a `message` to show). During those 24 hours:
+
+        - the account **keeps working**, so the user can see what is happening;
+        - `accountStatus` is `pending_deletion` (with `deletionRequestedAt` and `deletesAt`) on `GET /api/me`, in the login
+          and register answers, and as `accountDeletion` on `GET /api/dashboard` and in the login answer, so every screen can show a notice;
+        - `POST /api/me/cancel-deletion` cancels it and nothing is lost.
+
+        When the 24 hours are over, the profile and **all** its data (bills, expenses, alerts, calculator numbers, tokens, and the
+        uploaded files and profile picture) are deleted for good and cannot be recovered. The server removes them automatically
+        (a check runs every minute and at start-up), and an account past its deadline is refused at once even before that check
+        runs. After that, `401 Account not found` and the email can be registered again.
+
+        Asking again while pending does **not** move the deadline. **Needs the current password** (send it in the JSON body, which
+        every common HTTP client supports for DELETE); a wrong one is a `400` naming `currentPassword`, never a 401, and counts
+        towards the limit of 8 failed attempts per 15 minutes.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword]
+              properties:
+                currentPassword: { type: string }
+      responses:
+        '202':
+          description: Accepted. The account is now pending deletion.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountDeletionPending' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     put:
       tags: [Profile]
       summary: Edit my name, phone or email
@@ -1124,11 +1191,14 @@ components:
 
     User:
       type: object
-      required: [id, email, name, phone, avatarUrl, balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline, createdAt]
+      required: [id, email, name, phone, avatarUrl, accountStatus, deletionRequestedAt, deletesAt, balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount, savingsGoalDeadline, createdAt]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
         name: { type: string, nullable: true, description: The display name entered at sign-up. }
+        accountStatus: { type: string, enum: [active, pending_deletion], description: '`pending_deletion` means the account will be permanently deleted at `deletesAt`; until then it still works and can be cancelled.' }
+        deletionRequestedAt: { type: string, format: date-time, nullable: true, description: When deletion was requested. Null if the account is active. }
+        deletesAt: { type: string, format: date-time, nullable: true, description: When the account and all its data will be permanently deleted (24 hours after the request). Null if the account is active. }
         phone: { type: string, nullable: true }
         avatarUrl: { type: string, nullable: true, description: 'The profile picture to show: a full https link, or a path such as `/uploads/abc.png` that needs the server address in front. Null if none.' }
         balance: { type: number }
@@ -1169,6 +1239,25 @@ components:
         expiresIn: { type: integer, example: 3600, description: 'Seconds until `token` expires. Refresh shortly before that, or on the first 401.' }
         refreshToken: { type: string, description: 'Keep it somewhere safe. Trade it for a new token at `POST /api/auth/refresh` once `token` has expired.' }
         user: { $ref: '#/components/schemas/User' }
+        accountDeletion: { $ref: '#/components/schemas/AccountDeletionNotice' }
+    AccountDeletionNotice:
+      type: object
+      nullable: true
+      description: Null for an active account. For one waiting to be deleted, the notice to show (for example as a banner).
+      required: [requestedAt, deletesAt, message]
+      properties:
+        requestedAt: { type: string, format: date-time }
+        deletesAt: { type: string, format: date-time }
+        message: { type: string }
+    AccountDeletionPending:
+      type: object
+      required: [accountStatus, graceHours, requestedAt, deletesAt, message]
+      properties:
+        accountStatus: { type: string, enum: [pending_deletion] }
+        graceHours: { type: integer, example: 24 }
+        requestedAt: { type: string, format: date-time }
+        deletesAt: { type: string, format: date-time }
+        message: { type: string, description: A sentence that can be shown as it is. }
     TokenPair:
       type: object
       required: [token, expiresIn, refreshToken]
@@ -1381,6 +1470,7 @@ components:
           maxItems: 5
           items: { $ref: '#/components/schemas/Expense' }
         unreadAlerts: { type: integer, description: 'Alerts the user has not marked as read.' }
+        accountDeletion: { $ref: '#/components/schemas/AccountDeletionNotice' }
 
     CanIAfford:
       type: object

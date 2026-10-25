@@ -1,9 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
+import { uploadsDir } from '../utils/uploadsDir.js';
 
-const UPLOAD_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../uploads');
+const UPLOAD_DIR = uploadsDir();
 
 // Where uploaded files are kept. With CLOUDINARY_URL set (cloudinary://API_KEY:API_SECRET@CLOUD_NAME) they go to
 // Cloudinary and are opened by their https link. Without it they stay on this server's disk (src/uploads) and are
@@ -57,6 +57,13 @@ export async function discardUpload(file, stored) {
   } catch (err) {
     logger.warn(`Could not clean up an upload: ${err.message}`);
   }
+}
+
+// Deletes one stored file: from Cloudinary by its id, or from this server's disk by its name. THROWS if it cannot, so a
+// caller that must be sure (the clean-up after an account deletion) can try again later.
+export async function deleteAsset({ publicId, resourceType = 'image', localName }) {
+  if (publicId) await driver.remove({ publicId, resourceType });
+  else if (localName) await fs.rm(path.join(UPLOAD_DIR, path.basename(localName)), { force: true });
 }
 
 // Deletes a file that was stored earlier, given its saved link and Cloudinary id (a replaced or removed profile picture).
