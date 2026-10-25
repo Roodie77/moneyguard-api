@@ -56,6 +56,25 @@ test('contract: forecast', async () => {
   assertContract(await app.api('POST', '/api/forecast', { body: {} }), '/api/forecast', 'post'); // 401
 });
 
+test('contract: assistant', async () => {
+  const { setAiDriver } = await import('../src/services/assistant.js');
+  const fresh = await registerUser(app.api);
+  const call = (message) => app.api('POST', '/api/assistant', { token: fresh.token, body: { message } });
+  const tool = { type: 'tool_use', id: 'c1', name: 'forecast', input: { amount: 100 } };
+
+  delete process.env.ANTHROPIC_API_KEY;
+  setAiDriver(null); // back to the real driver, which has no key here
+  assertContract(await call('hi'), '/api/assistant', 'post'); // 503
+  let round = 0;
+  setAiDriver({ async complete() { return round++ === 0 ? { stop_reason: 'tool_use', content: [tool] } : { stop_reason: 'end_turn', content: [{ type: 'text', text: 'That looks fine.' }] }; } });
+  const ok = await call('Can I afford 100?');
+  assertContract(ok, '/api/assistant', 'post'); // 200 with facts
+  assert.equal(ok.body.facts.length, 1);
+  setAiDriver({ async complete() { throw new Error('down'); } });
+  assertContract(await call('hi'), '/api/assistant', 'post'); // 502
+  assertContract(await call(''), '/api/assistant', 'post'); // 400
+});
+
 test('contract: financial profile', async () => {
   const fresh = await registerUser(app.api);
   const call = (method, p, body) => app.api(method, p, { token: fresh.token, body });

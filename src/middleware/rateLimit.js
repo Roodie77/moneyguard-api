@@ -36,4 +36,6 @@ export const authLimiter = limiter('auth', 15 * MIN, Number(process.env.AUTH_LIM
 export const resetLimiter = limiter('reset', 15 * MIN, Number(process.env.AUTH_LIMIT_MAX) || 8, 'Too many attempts. Try again in 15 minutes.');
 export const writeLimiter = limiter('write', MIN, 30, 'Too many requests. Slow down.');
 export const calcLimiter = limiter('calc', MIN, 20, 'Too many calculation requests.');
+// Each assistant call goes to an outside AI service and costs money, so it is limited more tightly.
+export const aiLimiter = limiter('ai', MIN, 10, 'Too many assistant requests. Try again in a minute.');
 export const readLimiter = limiter('read', MIN, 60, 'Too many requests.');

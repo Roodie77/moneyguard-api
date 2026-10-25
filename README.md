@@ -77,6 +77,8 @@ Set in `.env` locally, as real environment variables in production.
 | `CORS_ORIGINS` | no | Websites allowed to call the API from a browser, separated by commas. Defaults to the placeholder `https://frontend-placeholder.example.com` until the frontend is ready. |
 
 | `CLOUDINARY_URL` | no | Turns on Cloudinary storage for uploads: `cloudinary://API_KEY:API_SECRET@CLOUD_NAME`, copied from your Cloudinary dashboard. Keep it secret. Empty means files stay on the server's disk. |
+| `ANTHROPIC_API_KEY` | no | Turns on the AI assistant (`POST /api/assistant`). Without it that endpoint answers 503 and everything else works. Keep it secret. Only the user's question and the forecast numbers are sent, never names, emails or passwords. |
+| `ANTHROPIC_MODEL` | no | Which model the assistant uses. Default `claude-haiku-5-5`. |
 | `CLOUDINARY_FOLDER` | no | Top-level Cloudinary folder. Default `moneyguard`; each user's files go in `<folder>/<userId>`. |
 | `UPLOADS_DIR` | no | Where uploaded files are kept when Cloudinary is not used. Default `src/uploads`. Point it at a mounted disk that survives deploys. (The tests give each test its own folder with it.) |
 
@@ -122,6 +124,7 @@ The interactive reference is at `/docs` (Swagger UI) and the contract is [`src/d
 | Files | `POST /api/files`, `GET /api/files`, `GET /uploads/:filename` | Yes / Yes / Public link | Upload and list files. Each file comes back with a `url` to open it (a Cloudinary link, or `/uploads/...` when kept on the server's disk). `/uploads/:filename` exists only for disk-kept files |
 | Dashboard | `GET /api/dashboard` | Yes | Balance, safe-to-spend, recent expenses, unread alert count |
 | Calculators | `POST /api/can-i-afford` | Yes | Can I afford this purchase today? |
+| Calculators | `POST /api/assistant` | Yes | **AI assistant:** ask in plain words ("Can I afford a 40000 phone?"). It calls the survival forecast for the numbers (it never calculates) and every number in its reply is checked against the forecast. 10 calls a minute |
 | Calculators | `POST /api/forecast` | Yes | **Survival forecast:** the chance your money lasts until the next income, the largest purchase that keeps that chance under your chosen risk, and the chance for a specific purchase. Simulated from your own spending history |
 | Calculators | `POST /api/projected-balance`, `/api/cash-flow`, `/api/affordability` | Yes | EMI, cash-flow and loan affordability maths |
 | Analytics | `GET /api/analytics/summary` | Yes | Totals, per category, per day or month |
@@ -2269,7 +2272,7 @@ Most tests start the real app on a random port and call it over HTTP, like Postm
 | Files | What they cover |
 |---|---|
 | `auth`, `tokens`, `edge-auth`, `edge-auth-limits` | Register, login, wrong passwords, refresh tokens (single use, reuse detection, expiry), logout, password reset, and the rate limits on those endpoints |
-| `profile`, `financial-profile`, `logout-keeps-data`, `avatar`, `avatar-cloud`, `account-edit`, `account-edit-limits`, `account-deletion`, `account-deletion-cloud`, `account-deletion-limits`, `forecast-engine`, `forecast`, `forecast-scenarios`, `bills`, `bills-edit`, `uploads`, `cloud-storage` | Balance, income and savings-goal updates, the profile picture (set, replace, remove, type and size limits, on disk and on Cloudinary), the saved calculator numbers (defaults, partial saves, validation, privacy, and that they and all other data survive logout and login), bills, file upload rules (allowed types, size limit, safe file names), and uploads to Cloudinary (tested with a fake Cloudinary, so no account is needed): the returned link, per-user folders, no copy left on disk, and the uploaded copy removed again if the database record cannot be saved |
+| `profile`, `financial-profile`, `logout-keeps-data`, `avatar`, `avatar-cloud`, `account-edit`, `account-edit-limits`, `account-deletion`, `account-deletion-cloud`, `account-deletion-limits`, `forecast-engine`, `forecast`, `forecast-scenarios`, `assistant`, `assistant-limits`, `bills`, `bills-edit`, `uploads`, `cloud-storage` | Balance, income and savings-goal updates, the profile picture (set, replace, remove, type and size limits, on disk and on Cloudinary), the saved calculator numbers (defaults, partial saves, validation, privacy, and that they and all other data survive logout and login), bills, file upload rules (allowed types, size limit, safe file names), and uploads to Cloudinary (tested with a fake Cloudinary, so no account is needed): the returned link, per-user folders, no copy left on disk, and the uploaded copy removed again if the database record cannot be saved |
 | `expenses`, `expenses-manage`, `expenses-race`, `overspend`, `edge-money` | Recording, filtering, paging, editing and deleting expenses, exact money maths, and that simultaneous requests can never overspend the balance |
 | `analytics` | Summary totals, per-category percentages, day and month grouping in UTC |
 | `alert-rules`, `alert-rules-validation`, `alert-engine`, `alerts-flow` | Setting thresholds, what each of the six rule types fires on, firing once per period, notifications, marking alerts read |

@@ -199,6 +199,8 @@ export const forecast = Joi.object({
   confidence: Joi.number().min(0.5).max(0.99).default(0.95),
 });
 
+export const assistant = Joi.object({ message: Joi.string().trim().min(1).max(500).required() });
+
 export const canIAfford = Joi.object({ amount: positiveMoney.required() });
 
 export const projectedBalance = Joi.object({

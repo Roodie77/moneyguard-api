@@ -866,6 +866,51 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/assistant:
+    post:
+      tags: [Calculators]
+      summary: Ask the AI assistant about a spending decision
+      description: |
+        Plain-language questions such as "Can I afford a 40000 phone?". The assistant (a language model) works out what is
+        being asked and calls the survival forecast (`POST /api/forecast`) for the numbers; it never calculates anything
+        itself. Every number in its reply is checked against the forecast results and the user's own message: if the reply
+        contains any other number it is discarded and replaced by the forecast's own summary
+        (`replacedUnverifiedReply: true`). `facts` holds what the forecast returned, so the app can show the raw numbers
+        too. Only the message and the forecast numbers go to the AI service, never the name, email or password.
+        Answers **503** when the server has no `ANTHROPIC_API_KEY`, and **502** when the AI service is down. Limited to
+        10 calls a minute.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, minLength: 1, maxLength: 500 }
+            example: { message: Can I afford a phone that costs 40000? }
+      responses:
+        '200':
+          description: The checked answer
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssistantReply' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '502':
+          description: The AI service is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: The assistant is not set up on this server
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/projected-balance:
     post:
       tags: [Calculators]
@@ -1490,8 +1535,9 @@ components:
         warnings: { type: array, items: { type: string } }
     Dashboard:
       type: object
-      required: [user, safeToSpend, recentExpenses, unreadAlerts]
+      required: [user, safeToSpend, survival, recentExpenses, unreadAlerts]
       properties:
+        survival: { $ref: '#/components/schemas/ForecastBrief' }
         user:
           type: object
           required: [balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount]
@@ -1510,8 +1556,9 @@ components:
 
     CanIAfford:
       type: object
-      required: [recommendation, reason, explanation, remainingAfterPurchase, cashFlowWarnings, safeToSpend]
+      required: [recommendation, reason, explanation, remainingAfterPurchase, cashFlowWarnings, safeToSpend, forecast]
       properties:
+        forecast: { $ref: '#/components/schemas/ForecastBrief' }
         recommendation: { type: string, enum: [Safe, ThinkTwice, NotRecommended] }
         reason: { type: string }
         explanation: { type: string }
@@ -1519,6 +1566,47 @@ components:
         cashFlowWarnings: { type: array, items: { type: string } }
         safeToSpend: { $ref: '#/components/schemas/SafeToSpend' }
 
+    AssistantReply:
+      type: object
+      required: [reply, facts, checked, replacedUnverifiedReply]
+      properties:
+        reply: { type: string, description: 'The answer to show the user.' }
+        facts:
+          type: array
+          description: 'Every forecast the assistant asked for, with its input and the numbers returned. Empty if it needed no numbers (for example it asked for the amount).'
+          items:
+            type: object
+            required: [tool, input, result]
+            properties:
+              tool: { type: string, enum: [forecast] }
+              input: { type: object }
+              result: { type: object }
+        checked: { type: boolean, description: 'Always true: the reply was checked against the numbers.' }
+        replacedUnverifiedReply: { type: boolean, description: 'True when the first reply contained a number that did not come from the forecast, so the forecast summary was used instead.' }
+    ForecastBrief:
+      type: object
+      required: [confidence, survivalProbability, ruinProbability, maxPurchaseNow, nextIncomeDate, dataQuality, purchase, summary]
+      description: 'The short form of the survival forecast. The full one is POST /api/forecast.'
+      properties:
+        confidence: { type: number }
+        survivalProbability: { type: number, minimum: 0, maximum: 1 }
+        ruinProbability: { type: number, minimum: 0, maximum: 1 }
+        maxPurchaseNow: { type: number, minimum: 0 }
+        nextIncomeDate: { type: string }
+        dataQuality: { type: string, enum: [default, blended, history], description: 'default means no spending history yet, so the estimate is rough.' }
+        purchase: { $ref: '#/components/schemas/ForecastPurchase' }
+        summary: { type: string }
+    ForecastPurchase:
+      nullable: true
+      type: object
+      required: [amount, inDays, ruinProbability, survivalProbability, expectedShortfallInWorstCase, verdict]
+      properties:
+        amount: { type: number }
+        inDays: { type: integer }
+        ruinProbability: { type: number, minimum: 0, maximum: 1 }
+        survivalProbability: { type: number, minimum: 0, maximum: 1 }
+        expectedShortfallInWorstCase: { type: number, minimum: 0 }
+        verdict: { type: string, enum: [Safe, ThinkTwice, NotRecommended] }
     ForecastRuinDay:
       type: object
       required: [inDays, date, ruinProbability]

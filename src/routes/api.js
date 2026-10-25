@@ -5,7 +5,7 @@ import { asyncHandler as h } from '../utils/asyncHandler.js';
 import { authMiddleware, signToken, ACCESS_TOKEN_SECONDS } from '../middleware/auth.js';
 import { validate, validateQuery } from '../middleware/validate.js';
 import { uuidParam } from '../middleware/uuidParam.js';
-import { writeLimiter, calcLimiter, readLimiter, authLimiter } from '../middleware/rateLimit.js';
+import { writeLimiter, calcLimiter, readLimiter, authLimiter, aiLimiter } from '../middleware/rateLimit.js';
 import { upload, uploadAvatar } from '../middleware/upload.js';
 import { storeUpload, discardUpload, removeStored, withUrl } from '../services/storage.js';
 import * as schemas from '../validation/schemas.js';
@@ -16,9 +16,10 @@ import {
   summarizeCashFlow,
   calculateProjectedBalance,
 } from '../services/calculator.js';
-import { safeToSpendFor, forecastFor } from '../services/budget.js';
+import { safeToSpendFor, forecastFor, forecastBrief } from '../services/budget.js';
 import { issueRefreshToken } from '../services/tokens.js';
 import { publicUser, deletionInfo, isDue, requestDeletion, cancelDeletion, purgeAccount, DELETION_GRACE_HOURS } from '../services/account.js';
+import { askAssistant, AssistantUnavailable, aiConfigured } from '../services/assistant.js';
 import { evaluateAlerts } from '../services/alerts.js';
 import alertsRouter from './alerts.js';
 import analyticsRouter from './analytics.js';
@@ -371,14 +372,16 @@ router.get('/files', readLimiter, h(async (req, res) => {
 
 router.get('/dashboard', readLimiter, h(async (req, res) => {
   const { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount } = req.user;
-  const [safeToSpend, recentExpenses, [{ unread }]] = await Promise.all([
+  const [safeToSpend, survival, recentExpenses, [{ unread }]] = await Promise.all([
     safeToSpendFor(req.user),
+    forecastFor(req.user),
     query('SELECT * FROM expenses WHERE user_id = $1 ORDER BY date DESC LIMIT 5', [req.userId]),
     query('SELECT count(*)::int AS unread FROM alerts WHERE user_id = $1 AND read_at IS NULL', [req.userId]),
   ]);
   res.json({
     user: { balance, nextIncomeAmount, nextIncomeDate, savingsGoalAmount },
     safeToSpend,
+    survival: forecastBrief(survival), // the chance the money lasts until the next income (see POST /api/forecast)
     recentExpenses,
     unreadAlerts: unread,
     accountDeletion: deletionInfo(req.user), // null, or the pending-deletion notice to show as a banner
@@ -386,17 +389,27 @@ router.get('/dashboard', readLimiter, h(async (req, res) => {
 }));
 
 router.post('/can-i-afford', calcLimiter, validate(schemas.canIAfford), h(async (req, res) => {
-  const safeToSpend = await safeToSpendFor(req.user);
+  const [safeToSpend, forecast] = await Promise.all([safeToSpendFor(req.user), forecastFor(req.user, { amount: req.body.amount })]);
   const result = canIAfford({ purchaseAmount: req.body.amount, safeToSpend, balance: req.user.balance });
   await query(
     'INSERT INTO affordability_checks (user_id, amount, recommendation) VALUES ($1, $2, $3)',
     [req.userId, req.body.amount, result.recommendation],
   );
-  res.json({ ...result, safeToSpend });
+  res.json({ ...result, safeToSpend, forecast: forecastBrief(forecast) });
 }));
 
 router.post('/forecast', calcLimiter, validate(schemas.forecast), h(async (req, res) => {
   res.json(await forecastFor(req.user, req.body));
+}));
+
+router.post('/assistant', aiLimiter, validate(schemas.assistant), h(async (req, res) => {
+  if (!aiConfigured()) return res.status(503).json({ error: 'The AI assistant is not set up on this server' });
+  try {
+    res.json(await askAssistant(req.user, req.body.message));
+  } catch (err) {
+    if (!(err instanceof AssistantUnavailable)) throw err;
+    res.status(502).json({ error: 'The assistant is unavailable right now. Please try again.' });
+  }
 }));
 
 router.post('/projected-balance', calcLimiter, validate(schemas.projectedBalance), (req, res) => {

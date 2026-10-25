@@ -62,6 +62,7 @@ Order matters: the idempotency middleware runs before auth, which is why its cac
 | Files | `GET /uploads/:filename` | no | global | public, unguessable name |
 | Dashboard | `GET /api/dashboard` | yes | read | balance, safe-to-spend, 5 latest expenses, unread alert count |
 | Calculators | `POST /api/can-i-afford` | yes | calc | records an `affordability_checks` row |
+| Calculators | `POST /api/assistant` | yes | ai (10/min) | AI assistant over the forecast; 503 without `ANTHROPIC_API_KEY`, 502 if the AI service fails |
 | Calculators | `POST /api/forecast` | yes | calc | survival forecast (Monte Carlo); read-only, writes nothing |
 | Calculators | `POST /api/projected-balance`, `/cash-flow`, `/affordability` | yes | calc | pure maths, no database access |
 
@@ -245,7 +246,19 @@ between logins. `GET` returns defaults when there is no row; `PUT` is an upsert 
 
 Tests: `forecast-engine` checks the maths against hand-worked answers (a log-normal case with a known 50% and a known quantile), `forecast` and `forecast-scenarios` go through the API.
 
+**Where it appears:** `GET /api/dashboard` returns `survival` and `POST /api/can-i-afford` returns `forecast` (the short form, `forecastBrief()`), alongside the older average-based numbers, which are unchanged. A simulation takes about 15 ms for a typical 10-day horizon (up to about 100 ms for the 90-day cap).
+
 **Limits:** it only knows past behaviour, so it cannot foresee emergencies, and income is assumed to arrive at the next income date. Money outflows persist until then, so buying a few days later within the same period changes the risk very little; the useful alternatives are a smaller amount or waiting for the next income, which the summary says. The answer is an estimate and carries a disclaimer. Planned next: use it in the dashboard and `can-i-afford`, and a language-model layer that only explains and calls this engine (it never does the arithmetic).
+
+### AI assistant (`POST /api/assistant`)
+
+`services/assistant.js`. The rule is **the model talks, the code calculates**: language models make confident arithmetic mistakes, are not repeatable and cannot be unit-tested, so none of the maths is left to one.
+
+1. The model (Anthropic Messages API through plain `fetch`; model from `ANTHROPIC_MODEL`, default `claude-haiku-5-5`) gets the user's question, a system prompt with the rules, and one tool, `forecast`. Up to 3 rounds: it calls the tool, `forecastFor()` runs the engine, the result goes back to it, it writes the answer.
+2. **The tool result is the only source of numbers.** It contains the percentages already rounded for quoting, the largest safe purchase, the verdict, and the engine's own plain-language `summary`.
+3. **The answer is checked** (`unverifiedNumbers`): every number in the reply must be in the tool results or in the user's own message (within rounding). If not, the reply is discarded and replaced with the engine's summary, and `replacedUnverifiedReply` is `true`. If the model never produced an answer, a fixed fallback is used.
+4. **Privacy:** only the question and the forecast numbers leave the server; the model never sees the name, email, password hash or raw transactions. The only tool is read-only and works on the caller's own data, so an instruction hidden in a message cannot reach anyone else's data or change anything.
+5. **Cost and failure:** a stricter limiter (10/min); 20 s timeout; any upstream failure becomes a 502 with a generic message (details only in the log); no key means 503. The driver sits behind `setAiDriver`, so the tests use a fake model and need no key or network.
 
 ### Housekeeping
 

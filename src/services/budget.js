@@ -134,3 +134,15 @@ export async function forecastFor(user, { amount = 0, inDays = 0, confidence = 0
   }
   return response;
 }
+
+// The short form of a forecast for screens that already show other things (the dashboard, can-i-afford).
+export const forecastBrief = (f) => ({
+  confidence: f.confidence,
+  survivalProbability: f.survivalProbability,
+  ruinProbability: f.ruinProbability,
+  maxPurchaseNow: f.maxPurchaseNow,
+  nextIncomeDate: f.nextIncomeDate,
+  dataQuality: f.model.source,
+  purchase: f.purchase,
+  summary: f.summary,
+});
