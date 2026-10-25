@@ -132,6 +132,29 @@ export function unverifiedNumbers(reply, facts, message) {
   return numbersIn(reply).filter((n) => !allowed.some((a) => Math.abs(a - n) <= Math.max(0.5, Math.abs(a) * 0.005)));
 }
 
+// The numbers behind an answer as plain label and value lines, for an optional "Show details" panel. They come only from the
+// forecast result, never from the model, and are written for people: nothing in them needs to be read as code.
+const VERDICTS = { Safe: 'Safe', ThinkTwice: 'Think twice', NotRecommended: 'Not recommended' };
+const BASED_ON = { history: 'Your own spending history', blended: 'A little of your history plus starting assumptions', default: 'Starting assumptions (no spending history yet)' };
+const amountText = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+export function detailsOf(result) {
+  if (!result || result.error) return [];
+  const lines = [];
+  if (result.purchase) {
+    lines.push({ label: 'Purchase amount', value: amountText(result.purchase.amount) });
+    lines.push({ label: 'Chance of running out if you buy it', value: `${result.purchase.chanceOfRunningOutPercent}%` });
+    lines.push({ label: 'Verdict', value: VERDICTS[result.purchase.verdict] ?? result.purchase.verdict });
+    if (result.purchase.expectedShortfallInWorstCase > 0) lines.push({ label: 'In the worst cases you would fall short by about', value: amountText(result.purchase.expectedShortfallInWorstCase) });
+  }
+  lines.push({ label: 'Chance of reaching your next income without buying it', value: `${result.chanceOfReachingNextIncomePercent}%` });
+  lines.push({ label: 'Largest purchase that is safe today', value: amountText(result.largestSafePurchaseNow) });
+  lines.push({ label: 'How sure the forecast is asked to be', value: `${result.confidencePercent}%` });
+  lines.push({ label: 'Forecast runs until', value: result.nextIncomeDate });
+  lines.push({ label: 'Based on', value: BASED_ON[result.dataQuality] ?? result.dataQuality });
+  return lines;
+}
+
 const FALLBACK = 'I can only answer using your forecast numbers. Ask about a specific purchase, for example "Can I afford 40000?"';
 
 export async function askAssistant(user, message) {
@@ -166,5 +189,5 @@ export async function askAssistant(user, message) {
     replaced = Boolean(reply);
     reply = answers.length ? answers.at(-1).result.summary : FALLBACK;
   }
-  return { reply, facts, checked: true, replacedUnverifiedReply: replaced };
+  return { reply, details: detailsOf(answers.at(-1)?.result), facts, checked: true, replacedUnverifiedReply: replaced };
 }

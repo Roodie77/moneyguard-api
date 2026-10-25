@@ -48,6 +48,13 @@ test('it asks the forecast engine and the reply may quote the engine\'s numbers'
   assert.match(res.body.reply, /Buying 500/);
   assert.equal(res.body.facts.length, 1);
   assert.deepEqual(res.body.facts[0].input, { amount: 500 });
+  // the plain lines for a "Show details" panel: text only, straight from the forecast
+  const byLabel = Object.fromEntries(res.body.details.map((d) => [d.label, d.value]));
+  assert.equal(byLabel['Purchase amount'], '500');
+  assert.equal(byLabel['Verdict'], 'Safe');
+  assert.match(byLabel['Chance of running out if you buy it'], /^\d+%$/);
+  assert.equal(byLabel['Based on'], 'Your own spending history');
+  for (const d of res.body.details) assert.ok(typeof d.label === 'string' && typeof d.value === 'string' && !/[{}\[\]"]/.test(d.value), JSON.stringify(d));
   assert.equal(res.body.facts[0].result.purchase.verdict, 'Safe');
   assert.equal(calls.length, 2);
   // the model was told it has the forecast tool and that it must not calculate
@@ -61,6 +68,7 @@ test('a number the model made up is caught: the reply is replaced by the engine\
   assert.equal(res.status, 200);
   assert.equal(res.body.replacedUnverifiedReply, true);
   assert.doesNotMatch(res.body.reply, /777777/);
+  assert.doesNotMatch(JSON.stringify(res.body.details), /777777/); // the details never come from the model
   assert.equal(res.body.reply, res.body.facts[0].result.summary);
 });
 
@@ -79,6 +87,7 @@ test('with no amount the model asks for it, and no numbers are needed', async ()
   const res = await ask('Can I afford a new phone?');
   assert.equal(res.status, 200);
   assert.equal(res.body.facts.length, 0);
+  assert.deepEqual(res.body.details, []);
   assert.equal(res.body.replacedUnverifiedReply, false);
   assert.match(res.body.reply, /How much/);
 });

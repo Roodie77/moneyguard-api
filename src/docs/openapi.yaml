@@ -875,8 +875,8 @@ paths:
         being asked and calls the survival forecast (`POST /api/forecast`) for the numbers; it never calculates anything
         itself. Every number in its reply is checked against the forecast results and the user's own message: if the reply
         contains any other number it is discarded and replaced by the forecast's own summary
-        (`replacedUnverifiedReply: true`). `facts` holds what the forecast returned, so the app can show the raw numbers
-        too. Only the message and the forecast numbers go to the Ollama server, never the name, email or password.
+        (`replacedUnverifiedReply: true`). `details` holds the numbers behind the answer as plain label and value lines
+        for an optional "Show details" panel; `facts` is the raw data, for developers only. Only the message and the forecast numbers go to the Ollama server, never the name, email or password.
         Answers **503** when the server has no `OLLAMA_MODEL` set, and **502** when the Ollama server is unreachable or fails. Limited to
         10 calls a minute.
       security: [{ bearerAuth: [] }]
@@ -1570,12 +1570,21 @@ components:
 
     AssistantReply:
       type: object
-      required: [reply, facts, checked, replacedUnverifiedReply]
+      required: [reply, details, facts, checked, replacedUnverifiedReply]
       properties:
         reply: { type: string, description: 'The answer to show the user.' }
+        details:
+          type: array
+          description: 'The numbers behind the answer as plain label and value lines, ready to show in an optional "Show details" panel. Empty when the assistant needed no numbers. Always shown as text, never as code.'
+          items:
+            type: object
+            required: [label, value]
+            properties:
+              label: { type: string, example: Chance of running out if you buy it }
+              value: { type: string, example: 100% }
         facts:
           type: array
-          description: 'Every forecast the assistant asked for, with its input and the numbers returned. Empty if it needed no numbers (for example it asked for the amount).'
+          description: 'For developers and debugging only: every forecast the assistant asked for, with its input and the raw numbers returned. **Do not show this to people**; use details instead. Empty if it needed no numbers.'
           items:
             type: object
             required: [tool, input, result]

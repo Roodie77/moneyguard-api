@@ -388,7 +388,7 @@ It also appears, in short form, as `survival` on `GET /api/dashboard` and as `fo
 
 ### Ask the assistant `POST /api/assistant`
 
-A chat box for plain-words questions ("Can I afford 40000?"). Send `{ "message": "..." }` (1 to 500 characters); get `{ reply, facts, checked, replacedUnverifiedReply }`. The model (Ollama) cannot calculate: it asks the forecast for numbers, and every number in its reply is checked against the forecast. If it invents one, the reply is replaced by the forecast's own sentence. Only the question and the forecast numbers leave the server. Handle 429 (10 a minute), 502 (AI unavailable) and 503 (not turned on). It takes 1 to 3 seconds, so show a loading state and disable Send meanwhile.
+A chat box for plain-words questions ("Can I afford 40000?"). Send `{ "message": "..." }` (1 to 500 characters); get `{ reply, details, facts, checked, replacedUnverifiedReply }`. Show `reply`; for an optional "Show details" panel show the `details` list (plain `label` and `value` lines, empty when no numbers were needed). `facts` is raw data for developers: **never show it to people**. The model (Ollama) cannot calculate: it asks the forecast for numbers, and every number in its reply is checked against the forecast. If it invents one, the reply is replaced by the forecast's own sentence. Only the question and the forecast numbers leave the server. Handle 429 (10 a minute), 502 (AI unavailable) and 503 (not turned on). It takes 1 to 3 seconds, so show a loading state and disable Send meanwhile.
 
 ### Delete my account, with one day to change my mind `DELETE /api/me`
 
