@@ -3,8 +3,11 @@ import Joi from 'joi';
 // Numeric strings like "100" are accepted; booleans, arrays, null and "" are rejected.
 // precision(2) rounds to cents, matching the NUMERIC(15,2) columns. Rounding first means
 // 0.004 becomes 0 and is rejected here instead of violating a database CHECK later.
-const money = Joi.number().precision(2).min(0).max(1e12);
-const positiveMoney = Joi.number().precision(2).min(0.01).max(1e12);
+// The most any money field may hold: one trillion. Above it the amounts stop being safe to store and add up exactly.
+// The message says the limit in words, and the 400 also carries it as a number (details[].max) so a screen can show it.
+const TOO_LARGE = { 'number.max': '{#label} is too large: the most allowed is 1,000,000,000,000 (one trillion)' };
+const money = Joi.number().precision(2).min(0).max(1e12).messages(TOO_LARGE);
+const positiveMoney = Joi.number().precision(2).min(0.01).max(1e12).messages(TOO_LARGE);
 
 // Postgres cannot store NUL characters in text; reject them here instead of failing with a 500.
 const text = (max) =>

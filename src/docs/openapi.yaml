@@ -1220,6 +1220,8 @@ components:
             properties:
               field: { type: string, example: amount }
               message: { type: string, example: amount must be greater than 0 }
+              max: { type: number, description: 'Present when a number is above its limit: the largest value allowed (1000000000000 for money).' }
+              min: { type: number, description: 'Present when a number is below its limit: the smallest value allowed.' }
 
     Health:
       type: object
