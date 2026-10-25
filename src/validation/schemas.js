@@ -193,6 +193,12 @@ export const alertsQuery = Joi.object({
   ...page,
 });
 
+export const forecast = Joi.object({
+  amount: positiveMoney,
+  inDays: Joi.number().integer().min(0).max(365).default(0),
+  confidence: Joi.number().min(0.5).max(0.99).default(0.95),
+});
+
 export const canIAfford = Joi.object({ amount: positiveMoney.required() });
 
 export const projectedBalance = Joi.object({

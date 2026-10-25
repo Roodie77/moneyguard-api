@@ -830,6 +830,42 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
 
+  /api/forecast:
+    post:
+      tags: [Calculators]
+      summary: Survival forecast - the chance your money lasts until the next income
+      description: |
+        Simulates the days until the next income 10,000 times. Bills fall on their due dates; daily spending is random and
+        learned from the user's own last 60 days (a new user starts from sensible assumptions). From the simulated futures it
+        answers: the chance of running out (`ruinProbability`), the largest purchase that keeps that chance under the chosen
+        risk (`maxPurchaseNow`), and, when an `amount` is sent, the chance for that purchase and the worst-case shortfall.
+        `ruinByDay` shows when in the period the danger is. The numbers are computed by the server, never by a language
+        model, and are identical for repeated calls on the same day. "Running out" means the balance falling below the
+        savings reserve. Only the next 90 days are forecast. The `averageMethod` field is the plain "balance divided by days"
+        figure, for comparison.
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount: { $ref: '#/components/schemas/PositiveMoney' }
+                inDays: { type: integer, minimum: 0, maximum: 365, default: 0, description: 'Buy the item this many days from today (0 = today). Only used with amount.' }
+                confidence: { type: number, minimum: 0.5, maximum: 0.99, default: 0.95, description: 'How sure to be. 0.95 means the chance of running out must stay at or under 5%.' }
+            example: { amount: 40000, confidence: 0.95 }
+      responses:
+        '200':
+          description: The forecast
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Forecast' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
   /api/projected-balance:
     post:
       tags: [Calculators]
@@ -1482,6 +1518,59 @@ components:
         remainingAfterPurchase: { type: number }
         cashFlowWarnings: { type: array, items: { type: string } }
         safeToSpend: { $ref: '#/components/schemas/SafeToSpend' }
+
+    ForecastRuinDay:
+      type: object
+      required: [inDays, date, ruinProbability]
+      properties:
+        inDays: { type: integer, minimum: 0 }
+        date: { type: string, description: 'The UTC date (YYYY-MM-DD).' }
+        ruinProbability: { type: number, minimum: 0, maximum: 1, description: 'Cumulative: the chance of having run out on or before this day.' }
+    Forecast:
+      type: object
+      required: [confidence, horizonDays, nextIncomeDate, survivalProbability, ruinProbability, maxPurchaseNow, averageMethod, purchase, ruinByDay, model, summary, warnings, disclaimer]
+      properties:
+        confidence: { type: number }
+        horizonDays: { type: integer, minimum: 1, description: 'Days simulated (up to 90).' }
+        nextIncomeDate: { type: string, description: 'UTC date (YYYY-MM-DD).' }
+        survivalProbability: { type: number, minimum: 0, maximum: 1, description: 'Chance of reaching the next income without going under the savings reserve, with no new purchase.' }
+        ruinProbability: { type: number, minimum: 0, maximum: 1, description: 'One minus survivalProbability.' }
+        maxPurchaseNow: { type: number, minimum: 0, description: 'The largest one-off purchase today that keeps the chance of running out at or under 1 - confidence.' }
+        averageMethod:
+          type: object
+          required: [dailySafeToSpend, daysUntilNextIncome]
+          description: 'The plain average figure (balance after commitments divided by days), for comparison.'
+          properties:
+            dailySafeToSpend: { type: number }
+            daysUntilNextIncome: { type: integer }
+        purchase:
+          nullable: true
+          description: 'Present only when amount was sent.'
+          type: object
+          required: [amount, inDays, ruinProbability, survivalProbability, expectedShortfallInWorstCase, verdict]
+          properties:
+            amount: { type: number }
+            inDays: { type: integer }
+            ruinProbability: { type: number, minimum: 0, maximum: 1 }
+            survivalProbability: { type: number, minimum: 0, maximum: 1 }
+            expectedShortfallInWorstCase: { type: number, minimum: 0, description: 'Average amount below the savings reserve in the worst (1 - confidence) share of futures.' }
+            verdict: { type: string, enum: [Safe, ThinkTwice, NotRecommended], description: 'Safe: within the chosen risk. ThinkTwice: up to three times it (at most 50%). Otherwise NotRecommended.' }
+        ruinByDay:
+          type: array
+          description: 'The chance of having run out on or before each day up to and including the income day, with the purchase when amount was sent. Never decreases. Shows when the danger is; good for a chart.'
+          items: { $ref: '#/components/schemas/ForecastRuinDay' }
+        model:
+          type: object
+          required: [source, observedDays, meanDailySpend, zeroSpendDayShare, paths]
+          properties:
+            source: { type: string, enum: [default, blended, history], description: 'default: no history yet. blended: some history mixed with starting assumptions. history: 28 or more days of the user own data.' }
+            observedDays: { type: integer }
+            meanDailySpend: { type: number }
+            zeroSpendDayShare: { type: number }
+            paths: { type: integer }
+        summary: { type: string, description: 'One plain sentence for the user, built from the numbers above.' }
+        warnings: { type: array, items: { type: string } }
+        disclaimer: { type: string }
 
     ProjectedBalance:
       type: object

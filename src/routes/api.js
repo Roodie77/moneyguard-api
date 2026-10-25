@@ -16,7 +16,7 @@ import {
   summarizeCashFlow,
   calculateProjectedBalance,
 } from '../services/calculator.js';
-import { safeToSpendFor } from '../services/budget.js';
+import { safeToSpendFor, forecastFor } from '../services/budget.js';
 import { issueRefreshToken } from '../services/tokens.js';
 import { publicUser, deletionInfo, isDue, requestDeletion, cancelDeletion, purgeAccount, DELETION_GRACE_HOURS } from '../services/account.js';
 import { evaluateAlerts } from '../services/alerts.js';
@@ -393,6 +393,10 @@ router.post('/can-i-afford', calcLimiter, validate(schemas.canIAfford), h(async 
     [req.userId, req.body.amount, result.recommendation],
   );
   res.json({ ...result, safeToSpend });
+}));
+
+router.post('/forecast', calcLimiter, validate(schemas.forecast), h(async (req, res) => {
+  res.json(await forecastFor(req.user, req.body));
 }));
 
 router.post('/projected-balance', calcLimiter, validate(schemas.projectedBalance), (req, res) => {

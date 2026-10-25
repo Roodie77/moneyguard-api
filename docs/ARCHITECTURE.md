@@ -62,6 +62,7 @@ Order matters: the idempotency middleware runs before auth, which is why its cac
 | Files | `GET /uploads/:filename` | no | global | public, unguessable name |
 | Dashboard | `GET /api/dashboard` | yes | read | balance, safe-to-spend, 5 latest expenses, unread alert count |
 | Calculators | `POST /api/can-i-afford` | yes | calc | records an `affordability_checks` row |
+| Calculators | `POST /api/forecast` | yes | calc | survival forecast (Monte Carlo); read-only, writes nothing |
 | Calculators | `POST /api/projected-balance`, `/cash-flow`, `/affordability` | yes | calc | pure maths, no database access |
 
 ### Code map
@@ -233,6 +234,18 @@ the message), `period_key`, `created_at`, `read_at`. `UNIQUE (rule_id, period_ke
 0.4), `annual_interest_rate` numeric(7,6) (0 to 1, a fraction), `loan_term_months` (1 to 480, default 12), `updated_at`. The
 calculators are stateless: they only compute from what a request sends. This table is what lets the app remember those inputs
 between logins. `GET` returns defaults when there is no row; `PUT` is an upsert that changes only the fields sent.
+
+### Survival forecast (`POST /api/forecast`)
+
+"Safe to spend" divides the money left by the days left, an average that ignores how lumpy spending is. The forecast simulates the days until the next income and answers from the simulated futures. Code: `services/forecast.js` (pure maths, no database or clock) and `forecastFor()` in `services/budget.js` (loads the data).
+
+1. **Learn the user's spending** (`fitSpendModel`): daily totals for up to 60 days (zero days included, from the first day we have any trace of the user until yesterday). A day is "no spending" with probability `p0`, otherwise log-normal (`mu`, `sigma`). The estimates are shrunk towards starting assumptions (a new user is assumed to spend 60% of their budget), with the assumptions worth a few pseudo-days, so a new user still gets a model and the user's own data takes over as days accumulate. `model.source` says which: `default`, `blended` (under 28 days), `history`.
+2. **Simulate** (`simulateSurvival`): 10,000 paths over the days to the next income (capped at 90). Each day subtracts a random spend; each bill is subtracted on its due day (a bill with no or a past date is counted today, like safe-to-spend); bills on the income day itself still count. "Ruin" is the balance going under the savings reserve. Random numbers come from a seeded generator (seed = user id + UTC date), so the same call on the same day returns identical numbers.
+3. **Read the answers off the futures:** `ruinProbability` is the share of paths that go under the reserve. `maxPurchaseNow` is the (1 - confidence) quantile of each path's slack (lowest balance minus reserve): the largest one-off purchase that keeps ruin at or under the chosen risk. With an `amount`, the purchase's own ruin probability, the worst-case shortfall (the mean shortfall in the worst 1 - confidence share, i.e. CVaR) and a verdict (Safe / ThinkTwice / NotRecommended). `ruinByDay` is the cumulative chance of having run out by each day.
+
+Tests: `forecast-engine` checks the maths against hand-worked answers (a log-normal case with a known 50% and a known quantile), `forecast` and `forecast-scenarios` go through the API.
+
+**Limits:** it only knows past behaviour, so it cannot foresee emergencies, and income is assumed to arrive at the next income date. Money outflows persist until then, so buying a few days later within the same period changes the risk very little; the useful alternatives are a smaller amount or waiting for the next income, which the summary says. The answer is an estimate and carries a disclaimer. Planned next: use it in the dashboard and `can-i-afford`, and a language-model layer that only explains and calls this engine (it never does the arithmetic).
 
 ### Housekeeping
 

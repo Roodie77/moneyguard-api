@@ -45,6 +45,17 @@ test('contract: account deletion', async () => {
   assertContract(await call('GET', '/api/dashboard'), '/api/dashboard', 'get'); // accountDeletion null again
 });
 
+test('contract: forecast', async () => {
+  const fresh = await registerUser(app.api);
+  const call = (body) => app.api('POST', '/api/forecast', { token: fresh.token, body });
+  await app.api('PUT', '/api/balance', { token: fresh.token, body: { balance: 5000 } });
+  assertContract(await call(), '/api/forecast', 'post'); // no purchase: purchase is null
+  assertContract(await call({ amount: 800, confidence: 0.9 }), '/api/forecast', 'post'); // with a purchase
+  assertContract(await call({ amount: 9_000_000 }), '/api/forecast', 'post'); // NotRecommended
+  assertContract(await call({ amount: 0 }), '/api/forecast', 'post'); // 400
+  assertContract(await app.api('POST', '/api/forecast', { body: {} }), '/api/forecast', 'post'); // 401
+});
+
 test('contract: financial profile', async () => {
   const fresh = await registerUser(app.api);
   const call = (method, p, body) => app.api(method, p, { token: fresh.token, body });
