@@ -6,6 +6,8 @@
 
 **Collaborator:** Chioma Ikeh
 
+**collaborator:** Festus Asembo
+
 REST API for MoneyGuard: track balance, bills and expenses, get a daily "safe to spend" figure, see where the money goes (analytics),
 set your own spending and balance alerts, and run affordability calculators (projected balance after a new EMI, loan affordability, cash-flow projection).
 
